@@ -1,4 +1,3 @@
-// Ollama stream runtime implements native transport behavior.
 import { randomUUID } from "node:crypto";
 import type { StreamFn } from "openclaw/plugin-sdk/agent-core";
 import { buildTimeoutAbortSignal } from "openclaw/plugin-sdk/extension-shared";
@@ -8,7 +7,6 @@ import {
 } from "openclaw/plugin-sdk/json-unsafe-integers";
 import type {
   AssistantMessage,
-  StopReason,
   TextContent,
   ThinkingContent,
   ToolCall,
@@ -24,6 +22,7 @@ import {
   notifyLlmRequestActivity,
 } from "openclaw/plugin-sdk/provider-stream-shared";
 import {
+  buildAssistantMessage as buildStreamAssistantMessage,
   describeUnsupportedToolResultMedia,
   extractToolResultText,
   failTransportStream,
@@ -361,25 +360,6 @@ function buildUsageWithNoCost(params: {
   };
 }
 
-function buildStreamAssistantMessage(params: {
-  model: StreamModelDescriptor;
-  content: AssistantMessage["content"];
-  stopReason: StopReason;
-  usage: Usage;
-  timestamp?: number;
-}): AssistantMessage {
-  return {
-    role: "assistant",
-    content: params.content,
-    stopReason: params.stopReason,
-    api: params.model.api,
-    provider: params.model.provider,
-    model: params.model.id,
-    usage: params.usage,
-    timestamp: params.timestamp ?? Date.now(),
-  };
-}
-
 interface OllamaChatRequest {
   model: string;
   messages: OllamaChatMessage[];
@@ -561,10 +541,6 @@ type OllamaAssistantMessageBuildOptions = OllamaToolCallNameOptions & {
   sanitizeVisibleContent?: boolean;
 };
 
-function readOllamaToolCallId(value: unknown): string | undefined {
-  return normalizeOptionalString(value);
-}
-
 function extractToolCalls(
   content: unknown,
   options: OllamaToolCallNameOptions = {},
@@ -575,22 +551,13 @@ function extractToolCalls(
   const parts = content as InputContentPart[];
   const result: OllamaToolCall[] = [];
   for (const part of parts) {
-    if (part.type === "toolCall") {
-      const id = readOllamaToolCallId(part.id);
+    if (part.type === "toolCall" || part.type === "tool_use") {
+      const id = normalizeOptionalString(part.id);
       result.push({
         ...(id ? { id } : {}),
         function: {
           name: normalizeOllamaToolCallName(part.name, options),
-          arguments: ensureArgsObject(part.arguments),
-        },
-      });
-    } else if (part.type === "tool_use") {
-      const id = readOllamaToolCallId(part.id);
-      result.push({
-        ...(id ? { id } : {}),
-        function: {
-          name: normalizeOllamaToolCallName(part.name, options),
-          arguments: ensureArgsObject(part.input),
+          arguments: ensureArgsObject(part.type === "toolCall" ? part.arguments : part.input),
         },
       });
     }
@@ -766,7 +733,7 @@ export function buildAssistantMessage(
     for (const toolCall of toolCalls) {
       content.push({
         type: "toolCall",
-        id: readOllamaToolCallId(toolCall.id) ?? `ollama_call_${randomUUID()}`,
+        id: normalizeOptionalString(toolCall.id) ?? `ollama_call_${randomUUID()}`,
         name: normalizeOllamaToolCallName(toolCall.function.name, options),
         arguments: parseTerminalToolCallArguments(toolCall.function.arguments),
       });
@@ -1092,19 +1059,20 @@ function createRawOllamaStreamFn(
             parts.push(...streamedToolCalls);
             return parts;
           };
+          const buildPartial = (content = buildCurrentContent()) =>
+            buildStreamAssistantMessage({
+              model: modelInfo,
+              content,
+              stopReason: "stop",
+              usage: buildUsageWithNoCost({}),
+            });
 
           const ensureStreamStarted = () => {
             if (streamStarted) {
               return;
             }
             streamStarted = true;
-            const emptyPartial = buildStreamAssistantMessage({
-              model: modelInfo,
-              content: [],
-              stopReason: "stop",
-              usage: buildUsageWithNoCost({}),
-            });
-            stream.push({ type: "start", partial: emptyPartial });
+            stream.push({ type: "start", partial: buildPartial([]) });
           };
 
           const closeThinkingBlock = () => {
@@ -1112,17 +1080,11 @@ function createRawOllamaStreamFn(
               return;
             }
             thinkingEnded = true;
-            const partial = buildStreamAssistantMessage({
-              model: modelInfo,
-              content: buildCurrentContent(),
-              stopReason: "stop",
-              usage: buildUsageWithNoCost({}),
-            });
             stream.push({
               type: "thinking_end",
               contentIndex: 0,
               content: accumulatedThinking,
-              partial,
+              partial: buildPartial(),
             });
           };
 
@@ -1131,17 +1093,11 @@ function createRawOllamaStreamFn(
               return;
             }
             textBlockClosed = true;
-            const partial = buildStreamAssistantMessage({
-              model: modelInfo,
-              content: buildCurrentContent(),
-              stopReason: "stop",
-              usage: buildUsageWithNoCost({}),
-            });
             stream.push({
               type: "text_end",
               contentIndex: textContentIndex(),
               content: accumulatedVisibleContent,
-              partial,
+              partial: buildPartial(),
             });
           };
 
@@ -1161,13 +1117,11 @@ function createRawOllamaStreamFn(
             ensureStreamStarted();
             if (!textBlockStarted) {
               textBlockStarted = true;
-              const partial = buildStreamAssistantMessage({
-                model: modelInfo,
-                content: buildCurrentContent(),
-                stopReason: "stop",
-                usage: buildUsageWithNoCost({}),
+              stream.push({
+                type: "text_start",
+                contentIndex: textContentIndex(),
+                partial: buildPartial(),
               });
-              stream.push({ type: "text_start", contentIndex: textContentIndex(), partial });
             }
 
             accumulatedVisibleContent = nextVisibleContent;
@@ -1203,26 +1157,14 @@ function createRawOllamaStreamFn(
               ensureStreamStarted();
               if (!thinkingStarted) {
                 thinkingStarted = true;
-                const partial = buildStreamAssistantMessage({
-                  model: modelInfo,
-                  content: buildCurrentContent(),
-                  stopReason: "stop",
-                  usage: buildUsageWithNoCost({}),
-                });
-                stream.push({ type: "thinking_start", contentIndex: 0, partial });
+                stream.push({ type: "thinking_start", contentIndex: 0, partial: buildPartial() });
               }
               accumulatedThinking += thinkingDelta;
-              const partial = buildStreamAssistantMessage({
-                model: modelInfo,
-                content: buildCurrentContent(),
-                stopReason: "stop",
-                usage: buildUsageWithNoCost({}),
-              });
               stream.push({
                 type: "thinking_delta",
                 contentIndex: 0,
                 delta: thinkingDelta,
-                partial,
+                partial: buildPartial(),
               });
             }
             if (thinkingDelta && !shouldEmitThinking) {
@@ -1243,7 +1185,7 @@ function createRawOllamaStreamFn(
               for (const rawToolCall of chunk.message.tool_calls) {
                 // Ollama can report a length stop in a later chunk, so no call
                 // becomes executable until its authoritative terminal arrives.
-                const id = readOllamaToolCallId(rawToolCall.id) ?? `ollama_call_${randomUUID()}`;
+                const id = normalizeOptionalString(rawToolCall.id) ?? `ollama_call_${randomUUID()}`;
                 accumulatedToolCalls.push({ ...rawToolCall, id });
               }
             }
@@ -1315,14 +1257,7 @@ function createRawOllamaStreamFn(
               const placeholder: ToolCall = { ...completedToolCall, arguments: {} };
               streamedToolCalls.push(placeholder);
               const contentIndex = buildCurrentContent().length - 1;
-              const partial = () =>
-                buildStreamAssistantMessage({
-                  model: modelInfo,
-                  content: buildCurrentContent(),
-                  stopReason: "stop",
-                  usage: buildUsageWithNoCost({}),
-                });
-              stream.push({ type: "toolcall_start", contentIndex, partial: partial() });
+              stream.push({ type: "toolcall_start", contentIndex, partial: buildPartial() });
               // Replace the placeholder instead of mutating it: queued start
               // snapshots must not see arguments before their delta arrives.
               streamedToolCalls[streamedToolCalls.length - 1] = completedToolCall;
@@ -1330,13 +1265,13 @@ function createRawOllamaStreamFn(
                 type: "toolcall_delta",
                 contentIndex,
                 delta: JSON.stringify(completedToolCall.arguments),
-                partial: partial(),
+                partial: buildPartial(),
               });
               stream.push({
                 type: "toolcall_end",
                 contentIndex,
                 toolCall: completedToolCall,
-                partial: partial(),
+                partial: buildPartial(),
               });
             }
           }

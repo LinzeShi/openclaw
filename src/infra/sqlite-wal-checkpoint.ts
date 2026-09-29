@@ -10,8 +10,6 @@ import {
   type SqliteReaderDiagnostic,
   type SqliteReaderDiagnostics,
 } from "./sqlite-reader-lifecycle.js";
-import { StateDatabaseCoordinatorContentionError } from "./state-database-coordinator-errors.js";
-import type { StateDatabaseCoordinatorOwner } from "./state-database-coordinator-owner.js";
 
 export type SqliteWalCheckpointMode = "PASSIVE" | "FULL" | "RESTART" | "TRUNCATE";
 
@@ -32,7 +30,6 @@ export type SqliteWalHealth = {
   consecutiveBlocked: number;
   warning: boolean;
   error?: string;
-  blockingOwner?: StateDatabaseCoordinatorOwner | "unknown";
   activeReaders?: SqliteReaderDiagnostic[];
   readerDiagnostics?: Array<Omit<SqliteReaderDiagnostics, "activeReaders">>;
 };
@@ -168,17 +165,12 @@ export function createSqliteWalCheckpoint(
   });
 
   const recordCheckpointError = (error: unknown, observation = checkpointObservation()): void => {
-    const contention = error instanceof StateDatabaseCoordinatorContentionError;
-    const consecutiveBlocked = contention
-      ? (snapshot?.health.blockingOwner ? snapshot.health.consecutiveBlocked : 0) + 1
-      : 0;
     const failed: SqliteWalHealth = {
       ...observation,
       observedAtMs: Date.now(),
-      state: contention ? "blocked" : "error",
-      consecutiveBlocked,
-      warning: !contention || consecutiveBlocked >= 2,
-      ...(contention ? { blockingOwner: error.blockingOwner ?? ("unknown" as const) } : {}),
+      state: "error",
+      consecutiveBlocked: 0,
+      warning: true,
       error: formatErrorMessage(error),
     };
     snapshot = {
@@ -190,14 +182,13 @@ export function createSqliteWalCheckpoint(
     if (options.databasePath) {
       notifyCheckpoint(options.databasePath, snapshot);
     }
-    if (!contention || consecutiveBlocked % 5 === 0) {
-      options.onCheckpointError?.(error);
-    }
+    options.onCheckpointError?.(error);
   };
 
   const recordCheckpoint = (
     mode: SqliteWalCheckpointMode,
     row: Record<string, SQLOutputValue> | undefined,
+    quiet: boolean,
   ): boolean => {
     // Worker relays keep this same-process ordering fact even if the wall clock steps backward.
     const observedAtNs = process.hrtime.bigint();
@@ -249,7 +240,9 @@ export function createSqliteWalCheckpoint(
     if (observation.error !== undefined) {
       options.onCheckpointError?.(sizeError);
     }
-    if (busy || observation.warning) {
+    // Frequent checkpoint ticks expect readers to block some passes; only the
+    // reclaim cadence reports them, the health snapshot still records every one.
+    if ((busy || observation.warning) && !quiet) {
       const label = options.databaseLabel ?? "sqlite database";
       options.onCheckpointError?.(
         new Error(
@@ -261,9 +254,23 @@ export function createSqliteWalCheckpoint(
   };
 
   return {
-    checkpoint(this: void, mode: SqliteWalCheckpointMode): boolean {
+    adopt(this: void, received: SqliteWalCheckpointSnapshot): void {
+      if (snapshot && snapshot.observedAtNs >= received.observedAtNs) {
+        return;
+      }
+      snapshot = structuredClone(received);
+      if (options.databasePath) {
+        snapshot.health = observeSqliteWalCheckpointHealth(options.databasePath, snapshot.health);
+        notifyCheckpoint(options.databasePath, snapshot);
+      }
+    },
+    checkpoint(
+      this: void,
+      mode: SqliteWalCheckpointMode,
+      checkpointOptions: { quiet?: boolean } = {},
+    ): boolean {
       try {
-        return recordCheckpoint(mode, checkpoint(database, mode));
+        return recordCheckpoint(mode, checkpoint(database, mode), checkpointOptions.quiet === true);
       } catch (error) {
         recordCheckpointError(error);
         return false;
