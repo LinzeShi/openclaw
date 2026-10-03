@@ -8,7 +8,7 @@ import { bindDeviceWorkerAvailability } from "./device-provider.js";
 import type { WorkerEnvironmentNodeTunnel } from "./environment-access.js";
 import { createWorkerPlacementDispatchService } from "./placement-dispatch.js";
 import type { WorkerTurnTunnelHandle } from "./tunnel-contract.js";
-import { measureLaunchTurn } from "./worker-turn-launcher.test-support.js";
+import { measureLaunchTurn, readLaunchToolNames } from "./worker-turn-launcher.test-support.js";
 import { createWorkerWorkspaceOperationCoordinator } from "./workspace-operation-coordinator.js";
 import { createWorkerWorkspaceRecoveryFixture } from "./workspace-recovery.test-support.js";
 
@@ -24,6 +24,7 @@ export function createProviderReplayNodeTunnel() {
       environmentId,
       ownerEpoch,
       measureLaunchTurn,
+      readLaunchToolNames,
       launchTurn: vi.fn<WorkerTurnTunnelHandle["launchTurn"]>(),
       runWorkspaceCommand: vi.fn<WorkerTurnTunnelHandle["runWorkspaceCommand"]>(),
       quiesceWorkspace: vi.fn<WorkerTurnTunnelHandle["quiesceWorkspace"]>(),
@@ -75,7 +76,7 @@ export function createProviderReplayDispatch(
     resolveMoveDestination: async () => undefined,
     runReclaimPreparation: async ({ run, authorize }) => await run(authorize),
     runReclaimBarrier: async ({ begin, reclaim }) =>
-      await reclaim({ kind: "local", path: "/gateway/workspace" }, begin()),
+      await reclaim({ kind: "local", path: "/gateway/workspace" }, await begin()),
     runFailedReclaimBarrier: async ({ reclaim }) => await reclaim(),
     ...createWorkerWorkspaceRecoveryFixture({
       resolveWorkspace: async () => ({ kind: "local", path: "/gateway/workspace" }),
