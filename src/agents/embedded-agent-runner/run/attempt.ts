@@ -134,7 +134,7 @@ async function runEmbeddedAttemptOwned(
   let bundleLspRuntime: Awaited<ReturnType<typeof createBundleLspToolRuntime>> | undefined;
   let toolSearchCatalogRef: ToolSearchCatalogRef | undefined;
   let toolSearchCatalogApplied = false;
-  let runCleanups: Array<(reason: string) => Promise<void>> = [];
+  let releasePreparedTools: ((reason: string) => Promise<void>) | undefined;
   const resources: EmbeddedAttemptSessionResources = {
     trajectoryRecorder: null,
     buildAbortSettlePromise: () => null,
@@ -201,6 +201,7 @@ async function runEmbeddedAttemptOwned(
     restoreSkillEnv = preparedSkills.restoreSkillEnv;
     const {
       codeModeSkills,
+      installedSkills,
       skillReadResources,
       skillUsagePaths,
       skillsPrompt,
@@ -245,10 +246,11 @@ async function runEmbeddedAttemptOwned(
         attempt: params,
         setup,
         markCoreToolStage: (name) => corePluginToolStages.mark(name),
-        onYield: (message, acknowledgment) => {
+        onYield: (message, acknowledgment, messageWaitRegistered) => {
           yieldDetected = true;
           yieldMessage = message;
           yieldAcknowledgment = acknowledgment;
+          yieldMessageWaitRegistered = messageWaitRegistered;
           queueYieldInterruptForSession?.();
           runAbortController.abort(SESSIONS_YIELD_ABORT_REASON);
           abortSessionForYield?.();
@@ -259,6 +261,7 @@ async function runEmbeddedAttemptOwned(
         skillReadResources,
         skillsSnapshot: skillsSnapshotForRun,
         codeModeSkills,
+        installedSkills,
         reviewTranscript: () => {
           if (!resources.session || runAbortController.signal.aborted) {
             return undefined;
@@ -287,13 +290,12 @@ async function runEmbeddedAttemptOwned(
     toolSearchCatalogRef = preparedToolBase.toolSearchCatalogRef;
     const {
       codeModeControlsEnabledForRun,
-      runCleanups: preparedRunCleanups,
       toolSearchControlsEnabledForRun,
       toolSearchRuntimeConfig,
       toolsEnabled,
       toolsRaw,
     } = preparedToolBase;
-    runCleanups = preparedRunCleanups;
+    releasePreparedTools = preparedToolBase.releaseTools;
     prepStages.mark("core-plugin-tools");
     emitCorePluginToolStageSummary("core-plugin-tools", corePluginToolStages.snapshot());
     const preparedBootstrap = await prepare("attempt.bootstrap", () =>
@@ -307,6 +309,7 @@ async function runEmbeddedAttemptOwned(
     let yieldDetected = false;
     let yieldMessage: string | null = null;
     let yieldAcknowledgment: string | undefined;
+    let yieldMessageWaitRegistered: boolean | undefined;
     // Late-binding reference so onYield can abort the session (declared after tool creation)
     let abortSessionForYield: (() => void) | null = null;
     let queueYieldInterruptForSession: (() => void) | null = null;
@@ -403,6 +406,7 @@ async function runEmbeddedAttemptOwned(
       );
       const promptToolPolicy = createPromptBuildToolPolicy({
         session: preparedSessionRuntime.agentSession.activeSession,
+        readModelTools: () => preparedSessionRuntime.agentSession.activeSession.agent.state.tools,
         effectiveTools,
         uncompactedEffectiveTools,
         tools: preparedBundleTools.tools,
@@ -465,6 +469,7 @@ async function runEmbeddedAttemptOwned(
             yieldDetected,
             yieldMessage,
             yieldAcknowledgment,
+            yieldMessageWaitRegistered,
           }),
           setToolSearchCatalogExecutor: (executor) => {
             toolSearchCatalogExecutor = executor;
@@ -549,15 +554,13 @@ async function runEmbeddedAttemptOwned(
             ? "error"
             : "completion";
     };
-    const cleanups = runCleanups.splice(0);
     const releaseTools = async () => {
       const cleanupReason = resolveCleanupReason();
       try {
         await cleanupStep("embedded-registered-resources", async () => {
-          const settled = await Promise.allSettled(
-            cleanups.map(async (cleanup) => await cleanup(cleanupReason)),
-          );
-          if (settled.some((result) => result.status === "rejected")) {
+          try {
+            await releasePreparedTools?.(cleanupReason);
+          } catch {
             recordAgentCleanupFailure();
           }
         });
