@@ -54,15 +54,19 @@ describe("completion-fish helpers", () => {
         description,
         choices: ["auto"],
       });
-    const result = spawnSync("fish", ["--no-config"], {
-      encoding: "utf8",
-      timeout: 15_000,
-      input: `${script}
+    const result = spawnSync(
+      "fish",
+      [
+        "--no-config",
+        "-c",
+        `${script}
 complete --do-complete 'openclaw proof-c'
 complete --do-complete 'openclaw --proof-o'
 complete --do-complete 'openclaw --proof-option a'
 `,
-    });
+      ],
+      { encoding: "utf8", timeout: 15_000 },
+    );
     expect(result.error).toBeUndefined();
     expect(result.stderr).toBe("");
     expect(result.status).toBe(0);
