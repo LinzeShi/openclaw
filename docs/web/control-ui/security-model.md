@@ -28,6 +28,16 @@ In practice:
 - Animated PNG (APNG) icons are accepted as PNG images. Workspace icons and managed channel avatars retain their animation; remote plugin, catalog, and link icons use a resized PNG preview.
 - Remote avatar URLs emitted by channel metadata are stripped at the Control UI's avatar helpers and replaced with the built-in logo/badge, so a compromised or malicious channel cannot force arbitrary remote image fetches from an operator browser.
 
+Page metadata reads stop at the end of the HTML head or after 64 KiB, whichever
+comes first; metadata beyond that limit is omitted. The Gateway streams the head
+without building a page DOM. Anonymous previews use a bounded cache per requesting
+principal and runtime config revision for one hour when available, or five minutes
+when unavailable; URL fragments share the same entry. Repeated links share pending
+requests, and a page that declares the same social image and favicon downloads it
+once. The 15-second preview deadline includes queue wait, fetching, and image work.
+Disabling automatic favicons or retiring the request's authority suppresses cached
+previews too.
+
 The browser-side CSP restriction itself is always on and not configurable.
 
 ## Public transcript boundary
