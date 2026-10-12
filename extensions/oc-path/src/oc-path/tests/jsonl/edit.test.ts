@@ -35,7 +35,7 @@ describe("setJsonlOcPath — value replacement", () => {
     expect(r.ok).toBe(true);
     if (r.ok) {
       expect(r.ast.raw).toBe(
-        '\nbroken __OPENCLAW_REDACTED__\n{"event":"replaced"}\n{"event":"end"}',
+        '\nbroken __OPENCLAW_REDACTED__\n{"event":"replaced"}\n{"event":"end"}\n',
       );
     }
   });
@@ -83,7 +83,7 @@ describe("appendJsonlOcPath — session checkpointing primitive", () => {
       kind: "object",
       entries: [{ key: "b", line: 0, value: { kind: "number", value: 2 } }],
     });
-    expect(next.raw).toBe('{"a":1}\r\n{"b":2}');
+    expect(next.raw).toBe('{"a":1}\r\n{"b":2}\r\n');
   });
 });
 

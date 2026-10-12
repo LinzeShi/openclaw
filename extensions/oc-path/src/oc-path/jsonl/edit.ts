@@ -128,7 +128,9 @@ function renderEditedJsonl(
     lines,
     ...(ast.lineEnding !== undefined ? { lineEnding: ast.lineEnding } : {}),
   };
-  return { ...next, raw: renderJsonl(next, fileName) };
+  // Keep the record separator so a later file append cannot join two JSON values.
+  const finalNewline = ast.raw.endsWith("\r\n") ? "\r\n" : ast.raw.endsWith("\n") ? "\n" : "";
+  return { ...next, raw: renderJsonl(next, fileName) + finalNewline };
 }
 
 /** Append a value as the next line. Line numbers are substrate-assigned. */
