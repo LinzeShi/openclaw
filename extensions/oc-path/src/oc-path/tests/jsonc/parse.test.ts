@@ -3,22 +3,40 @@ import { parseJsonc } from "../../jsonc/parse.js";
 
 const JSONC_INPUT_LIMIT_BYTES = 16 * 1024 * 1024;
 
-describe.each(["", "\uFEFF"])("parseJsonc line positions with prefix %j", (prefix) => {
-  it("locates column-one tokens", () => {
-    const { ast, diagnostics } = parseJsonc(`${prefix}[\n42\n]`);
+describe.each(["\n", "\r\n"])("parseJsonc line positions with %j line endings", (newline) => {
+  it.each(["", "\uFEFF"])("locates column-one tokens with prefix %j", (prefix) => {
+    const raw = prefix + ["", "{", '"items":[', "42", "]", "}"].join(newline);
+    const { ast, diagnostics } = parseJsonc(raw);
     expect(diagnostics).toEqual([]);
+    expect(ast.raw).toBe(raw);
     expect(ast.root).toEqual({
-      kind: "array",
-      line: 1,
-      items: [{ kind: "number", value: 42, line: 2 }],
+      kind: "object",
+      line: 2,
+      entries: [
+        {
+          key: "items",
+          line: 3,
+          value: {
+            kind: "array",
+            line: 3,
+            items: [{ kind: "number", value: 42, line: 4 }],
+          },
+        },
+      ],
     });
   });
 
-  it("locates column-one errors", () => {
-    const { diagnostics } = parseJsonc(`${prefix}{\n?\n}`);
-    expect(diagnostics).toContainEqual(
-      expect.objectContaining({ line: 2, message: "InvalidSymbol" }),
-    );
+  it.each(["", "\uFEFF"])("locates column-one errors with prefix %j", (prefix) => {
+    const raw = prefix + ["{", "?", "}"].join(newline);
+    const { ast, diagnostics } = parseJsonc(raw);
+    expect(ast.raw).toBe(raw);
+    expect(ast.root).toBeNull();
+    expect(diagnostics).toContainEqual({
+      line: 2,
+      message: "InvalidSymbol",
+      severity: "error",
+      code: "OC_JSONC_PARSE_FAILED",
+    });
   });
 });
 
