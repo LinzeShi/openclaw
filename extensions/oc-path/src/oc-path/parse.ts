@@ -20,7 +20,7 @@ type Token = ReturnType<MarkdownItParser["parse"]>[number];
 
 const FENCE = "---";
 const BOM = "﻿";
-const KV_RE = /^([^:]+?)\s*:\s*(.+)$/;
+const KV_RE = /^([^:]+?)\s*:\s*(.+)$/s;
 
 const md = new MarkdownIt({ html: true });
 
