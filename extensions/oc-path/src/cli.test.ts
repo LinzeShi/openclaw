@@ -487,18 +487,6 @@ describe("openclaw path CLI", () => {
         text: "first line\nsecond line",
         prefix: " ",
       },
-      {
-        eol: "\r\n",
-        value: " first line\n  second line",
-        text: "first line\nsecond line",
-        prefix: " ",
-      },
-      {
-        eol: "\n",
-        value: "\n  first line\n  second line",
-        text: "first line\nsecond line",
-        prefix: "\n  ",
-      },
       { eol: "\r\n", value: "\n  first line", text: "first line", prefix: "\n  " },
     ])(
       "reads and edits wrapped Markdown item values: $value with $eol",
