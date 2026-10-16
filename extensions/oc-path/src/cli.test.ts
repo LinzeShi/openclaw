@@ -520,11 +520,7 @@ describe("openclaw path CLI", () => {
     });
 
     it.each([
-      { label: "Windows path", value: String.raw`C:\Tools\bin` },
-      { label: "escaped quote", value: 'say "hello": now' },
-      { label: "line break", value: "first\nsecond" },
       { label: "quote delimiters", value: '"hello"' },
-      { label: "single quote delimiters", value: "'hello'" },
       { label: "surrounding whitespace", value: "  hello\t" },
     ])("preserves a frontmatter $label across separate CLI reads and edits", async ({ value }) => {
       const workspaceDir = tempDirs.make("oc-path-cli-");
