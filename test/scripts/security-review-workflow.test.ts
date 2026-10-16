@@ -23,7 +23,7 @@ type WorkflowStep = {
 
 type Workflow = {
   name: string;
-  on: Record<string, { types?: string[]; workflows?: string[]; inputs?: Record<string, unknown> }>;
+  on: Record<string, { types?: string[]; workflows?: string[] }>;
   permissions: Record<string, string>;
   concurrency?: { group: string; "cancel-in-progress": boolean };
   jobs: Record<
@@ -205,7 +205,7 @@ describe("security review workflow trust boundaries", () => {
               {
                 name: "Setup supported Node runtime",
                 "timeout-minutes": 3,
-                uses: "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020",
+                uses: "actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1",
                 with: { "node-version": "24.21.0", "package-manager-cache": false },
               },
             ]
@@ -237,9 +237,12 @@ describe("security review workflow trust boundaries", () => {
             );
             continue;
           }
-          expect(step.run).toBe(
-            `node scripts/github/security-review${name === "resolve" ? "-event" : ""}.mjs`,
-          );
+          // Final enforcement is exercised with preparation outputs below.
+          if (step.env?.OPENCLAW_SECURITY_REVIEW_MODE !== "enforce") {
+            expect(step.run).toBe(
+              `node scripts/github/security-review${name === "resolve" ? "-event" : ""}.mjs`,
+            );
+          }
           expect(step.env?.GITHUB_TOKEN).toBe("${{ github.token }}");
         }
       }
@@ -364,9 +367,9 @@ describe("security review workflow trust boundaries", () => {
   it("uses PR, command, revocation, CI completion, and reconciliation events", () => {
     const workflow = readWorkflow("security-review");
     expect(Object.keys(workflow.on).toSorted()).toEqual([
+      "issue_comment",
       "pull_request_target",
       "schedule",
-      "workflow_dispatch",
       "workflow_run",
     ]);
     expect(workflow.on.pull_request_target?.types).toEqual(
@@ -379,17 +382,7 @@ describe("security review workflow trust boundaries", () => {
         "closed",
       ]),
     );
-    expect(workflow.on.workflow_dispatch?.inputs?.pull_request).toMatchObject({
-      required: true,
-      type: "number",
-    });
-    // Revocations arrive through the shared listener; dropping `deleted` there
-    // would silently keep a withdrawn approval in force.
-    expect(readWorkflow("clawsweeper-dispatch").on.issue_comment?.types).toEqual([
-      "created",
-      "edited",
-      "deleted",
-    ]);
+    expect(workflow.on.issue_comment?.types).toEqual(["created", "edited", "deleted"]);
     expect(workflow.on.workflow_run).toEqual({ workflows: ["CI"], types: ["completed"] });
     expect(workflow.on.schedule).toEqual([{ cron: "4-59/10 * * * *" }]);
     const concurrency = workflow.jobs.resolve!.concurrency!;
@@ -443,14 +436,39 @@ describe("security review workflow trust boundaries", () => {
       { eventName: "workflow_run", sourceEvent: "pull_request", allowed: true },
       { eventName: "workflow_run", sourceEvent: "push", allowed: false },
       { eventName: "workflow_run", sourceEvent: "workflow_dispatch", allowed: true },
-      { eventName: "workflow_dispatch", allowed: true },
+      { action: "created", body: "/allow-security-sensitive-change", allowed: true },
+      { action: "created", body: "/allow-dependencies-change", allowed: true },
+      { action: "created", body: "Thanks", allowed: false },
+      {
+        action: "edited",
+        body: "Command removed",
+        previousBody: "/allow-dependencies-change",
+        allowed: true,
+      },
+      {
+        action: "edited",
+        body: "/allow-security-sensitive-change",
+        previousBody: "Thanks",
+        allowed: true,
+      },
+      { action: "deleted", body: "/allow-dependencies-change", allowed: true },
+      { action: "edited", body: "Thanks again", previousBody: "Thanks", allowed: false },
+      { action: "deleted", body: "Thanks", allowed: false },
+      { action: "created", body: "/allow-dependencies-change", issue: true, allowed: false },
+      { action: "edited", issue: true, allowed: false },
     ]) {
       const result = runInNewContext(condition, {
         github: {
-          event_name: event.eventName,
+          event_name: event.eventName ?? "issue_comment",
           event: {
             action: event.action,
-            changes: event.changes ?? {},
+            comment: { body: event.body ?? "" },
+            changes:
+              event.changes ??
+              (event.eventName === "pull_request_target"
+                ? {}
+                : { body: { from: event.previousBody ?? "" } }),
+            issue: { pull_request: event.issue ? null : {} },
             workflow_run: { event: event.sourceEvent },
           },
         },
@@ -460,86 +478,6 @@ describe("security review workflow trust boundaries", () => {
         vars: { OPENCLAW_RELEASE_PRIORITY_RUN: "" },
       });
       expect(Boolean(result), JSON.stringify(event)).toBe(event.allowed);
-    }
-  });
-
-  // ClawSweeper Dispatch owns comment admission for Security Review. Revocations
-  // (command edits and deletions) must still reach it; quotes and prose must not.
-  it.each<{ action: string; body: string | null; previousBody?: string; forwarded: boolean }>([
-    {
-      action: "created",
-      body: " \r\n /allow-dependencies-change \r\n/allow-security-sensitive-change\n",
-      forwarded: true,
-    },
-    {
-      action: "edited",
-      body: "Removed",
-      previousBody: "/allow-dependencies-change",
-      forwarded: true,
-    },
-    {
-      action: "edited",
-      body: "/allow-dependencies-change",
-      previousBody: "Thanks",
-      forwarded: true,
-    },
-    { action: "deleted", body: "/allow-security-sensitive-change", forwarded: true },
-    { action: "created", body: "Thanks", forwarded: false },
-    { action: "deleted", body: "Thanks", forwarded: false },
-    { action: "created", body: "/allow-dependencies-change-extra", forwarded: false },
-    { action: "created", body: "/allow-dependencies-change\nThanks", forwarded: false },
-    {
-      action: "edited",
-      body: "Removed",
-      previousBody: "Please post /allow-dependencies-change",
-      forwarded: false,
-    },
-    { action: "created", body: "/ALLOW-DEPENDENCIES-CHANGE", forwarded: false },
-    { action: "deleted", body: null, forwarded: false },
-  ])("forwards approval command activity from the shared listener: %j", (comment) => {
-    const job = readWorkflow("clawsweeper-dispatch").jobs["security-review-command"]!;
-    const event = {
-      action: comment.action,
-      issue: { number: 42, pull_request: {} },
-      comment: { body: comment.body },
-      changes: { body: { from: comment.previousBody } },
-    };
-    const admitted = runInNewContext(job.if!.replace(/^\$\{\{|\}\}$/gu, ""), {
-      github: { event_name: "issue_comment", event },
-      contains: (value: string | null, search: string) =>
-        (value ?? "").toLowerCase().includes(search.toLowerCase()),
-    });
-    const root = tempDirs.make("security-review-command-");
-    const eventFile = join(root, "event.json");
-    const ghLog = join(root, "gh.log");
-    writeFileSync(eventFile, JSON.stringify(event));
-    writeFileSync(
-      join(root, "gh"),
-      `#!/bin/sh\nprintf '%s\\n' "$*" >> ${JSON.stringify(ghLog)}\n`,
-      {
-        mode: 0o755,
-      },
-    );
-    const step = job.steps.find((candidate) => candidate.name?.startsWith("Forward approval"))!;
-    const result = spawnSync("bash", ["-c", step.run!], {
-      encoding: "utf8",
-      env: {
-        PATH: `${root}:${process.env.PATH}`,
-        GITHUB_EVENT_PATH: eventFile,
-        GITHUB_REPOSITORY: "openclaw/openclaw",
-        GH_TOKEN: "test-token",
-        PR_NUMBER: "42",
-        DEFAULT_BRANCH: "main",
-      },
-    });
-    expect(result.status, result.stderr).toBe(0);
-    const dispatched = existsSync(ghLog) ? readFileSync(ghLog, "utf8") : "";
-    // The cheap `if` may admit quoted commands; the parser step decides.
-    expect(Boolean(admitted) && dispatched !== "").toBe(comment.forwarded);
-    if (comment.forwarded) {
-      expect(dispatched).toBe(
-        "workflow run security-review.yml --repo openclaw/openclaw --ref main -f pull_request=42\n",
-      );
     }
   });
 
@@ -568,9 +506,9 @@ describe("security review workflow trust boundaries", () => {
 
   it("limits autoscrub writes to PR events and always enforces after failures", () => {
     const steps = readWorkflow("security-review").jobs.review!.steps;
-    const commands = steps.filter((step) => step.run?.startsWith("node "));
+    const commands = steps.filter((step) => step.env?.OPENCLAW_SECURITY_REVIEW_MODE);
     expect(commands.map((step) => step.env?.OPENCLAW_SECURITY_REVIEW_MODE)).toEqual([
-      "detect",
+      "prepare",
       "autoscrub",
       "enforce",
     ]);
@@ -581,7 +519,7 @@ describe("security review workflow trust boundaries", () => {
       ["pull_request_target", "synchronize", 42, true],
       ["pull_request_target", "synchronize", 43, false],
       ["pull_request_target", "closed", 42, false],
-      ["workflow_dispatch", undefined, 42, false],
+      ["issue_comment", "created", 42, false],
     ] as const) {
       expect(
         Boolean(
@@ -634,6 +572,16 @@ describe("security review workflow trust boundaries", () => {
       "${{ steps.app-token.outputs.token || steps.app-token-fallback.outputs.token }}",
     );
     expect(commands[2]?.env).not.toHaveProperty("OPENCLAW_DEPENDENCY_GUARD_AUTOSCRUB_TOKEN");
+    for (const completed of ["true", "false", ""]) {
+      const command = commands[2]!.run!.replace("${{ steps.detect.outputs.completed }}", completed);
+      const result = spawnSync("bash", ["-e", "-c", `node() { echo enforced; }\n${command}`], {
+        encoding: "utf8",
+      });
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout.trim()).toBe(
+        completed === "true" ? "Security review completed during preparation." : "enforced",
+      );
+    }
   });
 
   it("uses an explicit Node runtime without shared dependency caches or bootstrap credentials", () => {

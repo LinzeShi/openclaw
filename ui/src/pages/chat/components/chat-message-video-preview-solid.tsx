@@ -1,9 +1,9 @@
 import type { JSX } from "@solidjs/web";
-import { Show, createEffect, createSignal, onCleanup, untrack, useContext } from "solid-js";
+import { Show, createEffect, createSignal, untrack, useContext } from "solid-js";
 import { Icon } from "../../../components/solid/icon.tsx";
 import { requestVideoPoster } from "../../../lib/media/video-poster.ts";
 import { t } from "../../../lib/reactive/i18n.ts";
-import { SolidContentPresentation } from "../../../lit/solid-content.tsx";
+import { ContentPresentation } from "../../../lib/solid/presentation.ts";
 import { observeChatAttachmentViewport } from "./chat-attachment-viewport.ts";
 
 export type VideoPreviewProps = {
@@ -23,13 +23,12 @@ export function MessageVideoPreview(props: VideoPreviewProps): JSX.Element {
 }
 
 function VideoPreviewContent(props: VideoPreviewProps): JSX.Element {
-  const presented = useContext(SolidContentPresentation);
+  const presented = useContext(ContentPresentation);
   const [posterUrl, setPosterUrl] = createSignal<string>();
   const [failed, setFailed] = createSignal(false);
   let controller: AbortController | undefined;
   let currentPoster: string | undefined;
   let visible = false;
-  let disposed = false;
   let element!: HTMLDivElement;
   const release = () => {
     controller?.abort();
@@ -38,10 +37,9 @@ function VideoPreviewContent(props: VideoPreviewProps): JSX.Element {
       URL.revokeObjectURL(currentPoster);
     }
     currentPoster = undefined;
-    setPosterUrl(undefined);
   };
   const requestPoster = () => {
-    if (disposed || !presented() || !visible || controller || failed()) {
+    if (!presented() || !visible || controller || failed()) {
       return;
     }
     const request = new AbortController();
@@ -53,13 +51,8 @@ function VideoPreviewContent(props: VideoPreviewProps): JSX.Element {
       height: 225,
       signal: request.signal,
     }).then((blob) => {
-      if (
-        disposed ||
-        !presented() ||
-        request !== controller ||
-        request.signal.aborted ||
-        !visible
-      ) {
+      // Hiding, parking, or disposal aborts this request through release().
+      if (request.signal.aborted) {
         return;
       }
       if (blob) {
@@ -71,6 +64,7 @@ function VideoPreviewContent(props: VideoPreviewProps): JSX.Element {
     });
   };
   createEffect(presented, (active) => {
+    setPosterUrl(undefined);
     if (!active) {
       return undefined;
     }
@@ -85,6 +79,7 @@ function VideoPreviewContent(props: VideoPreviewProps): JSX.Element {
         () => {
           visible = false;
           release();
+          setPosterUrl(undefined);
         },
       ),
     );
@@ -93,9 +88,6 @@ function VideoPreviewContent(props: VideoPreviewProps): JSX.Element {
       visible = false;
       release();
     };
-  });
-  onCleanup(() => {
-    disposed = true;
   });
   return (
     <div
@@ -121,10 +113,9 @@ function VideoPreviewContent(props: VideoPreviewProps): JSX.Element {
                 src={url()}
                 alt={props.label}
                 onError={() => {
-                  if (!disposed && currentPoster === url()) {
-                    release();
-                    setFailed(true);
-                  }
+                  release();
+                  setPosterUrl(undefined);
+                  setFailed(true);
                 }}
               />
             )}

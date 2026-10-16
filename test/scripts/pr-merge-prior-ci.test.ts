@@ -102,6 +102,10 @@ describePosix("explicit prior-CI admin landing", () => {
     const result = f.verifyPriorCi(f.path);
     expect(result.status, result.output).not.toBe(0);
     expect(result.output).toContain("classic branch-protection policy is unavailable");
+    expect(result.output).toContain("ordinary green-CI landing");
+    expect(result.output).toContain(
+      "does not establish environment approval or production deployment authority",
+    );
     expect(f.state().calls.some((call) => call.includes("graphql"))).toBe(false);
     expect(f.state().mutations).toBe(0);
     expect(() => f.record()).toThrow();
@@ -260,8 +264,7 @@ describePosix("explicit prior-CI admin landing", () => {
   it.each([
     ["success", ""],
     ["pending", ""],
-    ["automation-dispatch", ""],
-    ["human-dispatch", "successful protected Security Review publisher is required"],
+    ["automation-dispatch", "successful protected Security Review publisher is required"],
     ["missing-job", "security-fast must pass independently"],
     ["duplicate-job", "security-fast must pass independently"],
     ["missing-status", "current combined CI/security status is required"],
@@ -281,7 +284,7 @@ describePosix("explicit prior-CI admin landing", () => {
   ])("validates %s security evidence without dispatch", (fault, message) => {
     const f = preExistingCandidate();
     const state = f.state();
-    const accepted = ["success", "pending", "automation-dispatch"].includes(fault!);
+    const accepted = fault === "success" || fault === "pending";
     if (fault === "success" || fault === "pending") {
       state.priorCi.security.combinedState = fault;
     } else {
