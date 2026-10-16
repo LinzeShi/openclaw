@@ -1,10 +1,14 @@
 import { toStringifiedError } from "@openclaw/normalization-core/error-coercion";
 import { getSqliteRuntimeCapabilities } from "../infra/bun-sqlite-library.js";
+import {
+  getDatabaseEngineSelection,
+  withDatabaseEngineSelection,
+} from "../infra/database-engine/context.js";
 import { bunSqliteNativeCleanupPending } from "../infra/node-sqlite.js";
 import { withSqliteReaderOwner } from "../infra/sqlite-reader-lifecycle.js";
 import { runWithSqliteWorkerStateContext } from "../infra/sqlite-worker-state-context.js";
 import { serveOwnedWorkerTasks } from "../infra/worker-task-server.js";
-import { readPluginMetadataStateRowsInDatabase } from "../plugins/plugin-metadata-state.kernel.js";
+import { pluginMetadataReadOperations } from "../plugins/plugin-metadata-state.read.worker.js";
 import { openClawStateDatabaseCache } from "./openclaw-state-db-cache.js";
 import {
   closeRetainedOpenClawStateReadConnections,
@@ -67,10 +71,7 @@ serveOwnedWorkerTasks(
           const result = withOpenClawStateReadOnlyLocation(
             ({ db }) => {
               sourceAdmitted = true;
-              return {
-                type: command.type,
-                rows: readPluginMetadataStateRowsInDatabase(db, command.input.stateKeys),
-              };
+              return pluginMetadataReadOperations[command.type](command.input, db);
             },
             ...locationArgs,
           );
@@ -156,10 +157,12 @@ serveOwnedWorkerTasks(
         );
         return { ok: true, sourceAdmitted: true, ...result };
       };
-      const reply = await withSqliteReaderOwner(
-        { operation: input.command.type, ownerKind: "worker" },
-        () => runWithSqliteWorkerStateContext(input.context, executeRead),
-      );
+      const selection = input.context.databaseEngineSelection ?? getDatabaseEngineSelection();
+      const run = () =>
+        withSqliteReaderOwner({ operation: input.command.type, ownerKind: "worker" }, () =>
+          runWithSqliteWorkerStateContext(input.context, executeRead),
+        );
+      const reply = await (selection ? withDatabaseEngineSelection(selection, run) : run());
       if (
         !getSqliteRuntimeCapabilities().explicitSqliteCloseReleasesNativeResources &&
         bunSqliteNativeCleanupPending

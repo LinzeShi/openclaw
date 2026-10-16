@@ -1,6 +1,7 @@
 // TTS directive tests cover parsing and applying speech directives.
 import { describe, expect, it } from "vitest";
 import type { SpeechProviderPlugin } from "../plugins/types.js";
+import { createSpeechDirectiveParser } from "./directive-parser.js";
 import { createTtsDirectiveTextStreamCleaner, parseTtsDirectives } from "./directives.js";
 import type {
   SpeechDirectiveTokenParseContext,
@@ -59,6 +60,34 @@ const fullPolicy: SpeechModelOverridePolicy = {
 };
 
 describe("parseTtsDirectives provider-aware routing", () => {
+  it("accumulates provider patches without asking the provider to copy prior overrides", () => {
+    const provider = makeProvider(
+      "example",
+      10,
+      createSpeechDirectiveParser({
+        voice: ["allowVoice", ["voice"]],
+        speed: [
+          "allowVoiceSettings",
+          ["speed"],
+          {
+            number: { range: { min: 0.5, max: 2 }, warning: () => "invalid speed" },
+          },
+        ],
+      }),
+    );
+    const result = parseTtsDirectives(
+      "[[tts:provider=example voice=speaker speed=1.25]]",
+      fullPolicy,
+      {
+        providers: [provider],
+      },
+    );
+    expect(result.overrides.providerOverrides?.example).toStrictEqual({
+      voice: "speaker",
+      speed: 1.25,
+    });
+    expect(result.warnings).toStrictEqual([]);
+  });
   it("does not resolve providers when text has no directives", () => {
     const failProvider = {
       get id() {
@@ -267,13 +296,13 @@ describe("createTtsDirectiveTextStreamCleaner", () => {
   });
 
   it.each([
-    [["```\n", "[[tts:literal", " speech]]\n", "```\n"], "```\n\n```\n"],
-    [["Use `", "[[tts:literal", " speech]]", "` here."], "Use `` here."],
-    [["~~~\n~~~ [[note]]\n[[tts:Literal speech]]\n~~~"], "~~~\n~~~ [[note]]\n\n~~~"],
-    [["~~~\n~~~ [[tts:voice=alloy]]\n[[tts:Literal speech]]\n~~~"], "~~~\n~~~ \n\n~~~"],
-  ] as const)("does not recover code literals as prose: %j", (chunks, expected) => {
+    ["```\n", "[[tts:literal", " speech]]\n", "```\n"],
+    ["Use `", "[[tts:literal", " speech]]", "` here."],
+    ["~~~\n~~~ [[note]]\n[[tts:Literal speech]]\n~~~"],
+    ["~~~\n~~~ [[tts:voice=alloy]]\n[[tts:Literal speech]]\n~~~"],
+  ])("preserves code literals across chunks: %j", (...chunks) => {
     const cleaner = createTtsDirectiveTextStreamCleaner();
-    expect(chunks.map((chunk) => cleaner.push(chunk)).join("")).toBe(expected);
+    expect(chunks.map((chunk) => cleaner.push(chunk)).join("")).toBe(chunks.join(""));
     expect(cleaner.push("\n[[tts:Visible speech]]")).toBe("\nVisible speech");
     expect(cleaner.flush()).toBe("");
   });

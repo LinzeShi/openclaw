@@ -13,7 +13,6 @@ import { buildRestartRecoveryExpectedState } from "../../config/sessions/session
 import type { InternalSessionEntry as SessionEntry } from "../../config/sessions/types.js";
 import { logVerbose } from "../../globals.js";
 import { SqliteWorkerError } from "../../infra/sqlite-worker-contract.js";
-import { withNativeIncognitoTurnCompletion } from "./agent-runner-completion.native.js";
 import type {
   AgentTurnCompletion,
   AgentTurnRestartClaimCleanup,
@@ -53,20 +52,6 @@ export async function withAgentTurnCompletion<T>(
   };
   assertCurrent();
   retainReplyOperationUntilComplete(operation);
-  const native = await withNativeIncognitoTurnCompletion(
-    {
-      agentId: params.agentId,
-      storePath,
-      sessionKey,
-      writer,
-      assertCurrent,
-      publish: (published) => params.publish(published),
-    },
-    consume,
-  );
-  if (native) {
-    return native.value;
-  }
   const result = await withSessionActor(
     { agentId: params.agentId, storePath, sessionKey },
     { assertCurrent, assertReadable: assertCurrent },
@@ -89,7 +74,7 @@ export async function withAgentTurnCompletion<T>(
       const prepared: Parameters<AgentTurnCompletion["patch"]>[0][] = [];
       let finished = false;
       const project = () => {
-        let next = structuredClone(snapshot.entry!);
+        let next = snapshot.entry!;
         const reducers: SessionActorReducer[] = [];
         for (const preparation of prepared) {
           const reducer = typeof preparation === "function" ? preparation(next) : preparation;
@@ -141,14 +126,13 @@ export async function withAgentTurnCompletion<T>(
               {
                 commandId: randomUUID(),
                 phaseId: `complete:${operationKey}`,
-                expected: snapshot.version,
+                expected: actor.target.database.kind === "memory" ? undefined : snapshot.version,
                 reducers,
                 bookkeeping: {
                   sessionId: expected.sessionId,
                   lifecycleRevision: expected.lifecycleRevision ?? null,
                   writerRunId: expected.writerRunId,
                   expectedState: buildRestartRecoveryExpectedState(snapshot.entry!),
-                  ...(pendingFinalDelivery ? { lifecycle: { updatedAt: Date.now() } } : {}),
                 },
                 pendingFinalDelivery,
                 restartClaimCleanup: restartClaimCleanup?.operation,

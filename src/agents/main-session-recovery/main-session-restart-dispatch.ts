@@ -2,24 +2,19 @@ import { randomUUID } from "node:crypto";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { GatewayClientRequestError } from "../../../packages/gateway-client/src/index.js";
 import { isExecutionIdentityCollectionEnabled } from "../../audit/audit-config.js";
-import { sanitizePendingFinalDeliveryText } from "../../auto-reply/reply/pending-final-delivery-state.js";
+import { stripInternalMetadataForDisplay } from "../../auto-reply/reply/display-text-sanitize.js";
 import type { InternalSessionEntry as SessionEntry } from "../../config/sessions.js";
-import {
-  applySessionEntryReplacements,
-  loadExactSessionEntry,
-} from "../../config/sessions/session-accessor.js";
+import { applySessionEntryReplacements } from "../../config/sessions/session-accessor.js";
 import { retainPreparedSessionEntryPredicate } from "../../config/sessions/session-accessor.sqlite-entry-cache-publication-state.js";
 import type { SessionEntryCurrentFacts } from "../../config/sessions/session-entry-current.types.js";
-import { isNativeSessionEntryRead } from "../../config/sessions/session-entry-read-request.js";
 import { withSessionEntriesFromStoreInWorker } from "../../config/sessions/session-entry-read-runtime.js";
-import { captureIncognitoSessionSource } from "../../config/sessions/session-incognito-binding.js";
+import { captureSessionEntryMetadataRead } from "../../config/sessions/session-entry-source-authority.js";
 import type { SessionSourceAssertion } from "../../config/sessions/session-source-authority.js";
 import { preparePhysicalSessionStorePath } from "../../config/sessions/session-store-path.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { GatewayRecoveryRuntime } from "../../gateway/server-instance-runtime.types.js";
 import type { AgentRunRequest } from "../../gateway/server-methods/agent-request-types.js";
 import { getAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
-import { CommandLane } from "../../process/lanes.js";
 import { MAIN_SESSION_RESTART_RECOVERY_SOURCE_TOOL } from "../../sessions/input-provenance.js";
 import { formatSystemTurnPrompt } from "../../sessions/system-turn-prompt.js";
 import { getOwedHarnessCompletionTask } from "../agent-harness-completion-recovery.js";
@@ -85,13 +80,12 @@ function buildResumeMessage(
   forceRestartSafeTools?: boolean,
   childRecoveryRoster?: string,
 ): string {
-  const sanitizedPendingText = sanitizePendingFinalDeliveryText(pendingFinalDeliveryText);
   const instructions = forceRestartSafeTools
     ? `${RESTART_RECOVERY_RESUME_MESSAGE}\n\n${RESTART_SAFE_TOOLS_NOTICE}`
     : RESTART_RECOVERY_RESUME_MESSAGE;
   const base = childRecoveryRoster ? `${instructions}\n\n${childRecoveryRoster}` : instructions;
-  return sanitizedPendingText
-    ? `${base}\n\nNote: The interrupted final reply was captured: "${sanitizedPendingText}"`
+  return pendingFinalDeliveryText
+    ? `${base}\n\nNote: The interrupted final reply was captured: "${pendingFinalDeliveryText}"`
     : base;
 }
 
@@ -155,6 +149,7 @@ type ResumeMainSessionParams = {
   forceRestartSafeTools?: boolean;
   forceCodeModeTools?: boolean;
   recoveryAdmission?: MainSessionRecoveryAdmission;
+  signal?: AbortSignal;
   lifecycleGeneration?: string;
   shouldContinue?: () => boolean;
   gatewayRuntime: GatewayRecoveryRuntime;
@@ -163,18 +158,13 @@ type ResumeMainSessionParams = {
 export async function resumeMainSession(
   params: ResumeMainSessionParams,
 ): Promise<MainSessionResumeResult> {
-  const source = captureIncognitoSessionSource(params);
-  const claim =
-    source && !("kind" in source)
-      ? source.actor.sessions.captureCurrent(params.sessionKey)
-      : undefined;
-  const native = !source && isNativeSessionEntryRead(params, params.agentId);
+  const source = captureSessionEntryMetadataRead(params, () => {});
   const matchesRequester = (current: SessionEntryCurrentFacts | undefined) =>
     current?.sessionId === params.entry.sessionId &&
     current.lifecycleRevision === params.entry.lifecycleRevision;
   let retained: ReturnType<typeof retainPreparedSessionEntryPredicate> | undefined;
   using _ = { [Symbol.dispose]: () => retained?.release() };
-  if (!source && !native) {
+  if (!source) {
     let databaseIdentity: string | undefined;
     await withSessionEntriesFromStoreInWorker(
       { ...params, sessionKeys: [params.sessionKey], projection: "list" },
@@ -198,33 +188,21 @@ export async function resumeMainSession(
     );
   }
   const isCurrent = () => {
-    if (source && "kind" in source) {
-      source.assertCurrent();
-      return false;
-    }
-    source?.admissionSignal?.throwIfAborted();
-    claim?.assertCurrent();
-    const current = source
-      ? source.actor.sessions.readCapability(params.sessionKey)
-      : native
-        ? loadExactSessionEntry({ ...params, readConsistency: "latest" })?.entry
-        : undefined;
-    return retained ? retained.isCurrent() : matchesRequester(current);
+    return source ? matchesRequester(source.readCurrent()) : retained?.isCurrent() === true;
   };
-  return (
-    (await runWithMainSessionRecoveryAdmission({
-      ...params,
-      sessionId: params.entry.sessionId,
-      admission: params.recoveryAdmission,
-      isCurrent,
-      run: (recoveryAdmission) =>
-        resumeMainSessionWithinAdmission({
-          ...params,
-          recoveryAdmission,
-          shouldContinue: recoveryAdmission.shouldContinue,
-        }),
-    })) ?? "skipped"
-  );
+  const result = await runWithMainSessionRecoveryAdmission({
+    ...params,
+    sessionId: params.entry.sessionId,
+    admission: params.recoveryAdmission,
+    isCurrent,
+    run: (recoveryAdmission) =>
+      resumeMainSessionWithinAdmission({
+        ...params,
+        recoveryAdmission,
+        shouldContinue: recoveryAdmission.shouldContinue,
+      }),
+  });
+  return result ?? "skipped";
 }
 
 async function resumeMainSessionWithinAdmission(
@@ -234,22 +212,13 @@ async function resumeMainSessionWithinAdmission(
     return "skipped";
   }
   const harnessCompletion = params.entry.restartRecoveryHarnessCompletion;
-  const source = captureIncognitoSessionSource(params);
-  const claim =
-    source && !("kind" in source)
-      ? source.actor.sessions.captureCurrent(params.sessionKey)
-      : undefined;
+  const source = captureSessionEntryMetadataRead(params, () => {});
   const taskRemainsOwed = () => {
     params.completionSource?.();
     if (!harnessCompletion) {
       return true;
     }
-    if (source && "kind" in source) {
-      source.assertCurrent();
-      return false;
-    }
-    claim?.assertCurrent();
-    const entry = source ? source.actor.sessions.readSteering(params.sessionKey) : params.entry;
+    const entry = source ? source.readCurrent() : params.entry;
     return Boolean(entry && getOwedHarnessCompletionTask(harnessCompletion, entry));
   };
   if (!taskRemainsOwed()) {
@@ -258,7 +227,7 @@ async function resumeMainSessionWithinAdmission(
   const lifecycleGeneration = params.lifecycleGeneration ?? getAgentEventLifecycleGeneration();
   const sanitizedPendingText =
     typeof params.pendingFinalDeliveryText === "string"
-      ? sanitizePendingFinalDeliveryText(params.pendingFinalDeliveryText)
+      ? stripInternalMetadataForDisplay(params.pendingFinalDeliveryText)
       : "";
   const deliveryContext = resolveRestartRecoveryDeliveryContext({
     cfg: params.cfg,
@@ -397,8 +366,7 @@ async function resumeMainSessionWithinAdmission(
       await rollbackReservation("cancel_reservation");
       return "skipped";
     }
-    // Persist one stable RPC id before dispatch. A transport rejection is
-    // ambiguous; retries must reuse this id so accepted work cannot duplicate.
+    // Reuse one RPC id on retries: transport rejection does not prove the dispatch was rejected.
     const recoveryStatePrepared = await applySessionEntryReplacements({
       agentId: target.agentId,
       sessionKeys: [params.sessionKey],
@@ -480,7 +448,7 @@ async function resumeMainSessionWithinAdmission(
       deliver:
         Boolean(deliveryContext) &&
         params.entry.restartRecoverySourceReplyDeliveryMode !== "message_tool_only",
-      lane: CommandLane.Main,
+      lane: params.recoveryAdmission.lane,
       ...(params.entry.restartRecoverySourceReplyDeliveryMode
         ? { sourceReplyDeliveryMode: params.entry.restartRecoverySourceReplyDeliveryMode }
         : {}),
@@ -596,6 +564,7 @@ async function resumeMainSessionWithinAdmission(
     if (resumeResult === "started" && agentParams.deliver && deliveryContext && taskRemainsOwed()) {
       deliveryCurrent = await prepareRestartRecoveryDeliveryCurrent({
         ...target,
+        storePath: requesterStorePath,
         sessionKey: dispatchSessionKey,
         sessionId: params.entry.sessionId,
         recoveryRunId,
@@ -643,11 +612,10 @@ async function resumeMainSessionWithinAdmission(
     return resumeResult;
   } catch (error) {
     const explicitlyRejected = error instanceof GatewayClientRequestError && !dispatchAccepted;
-    const canRestoreAcceptedFailure = !preStartAbortAttempted || preStartAbortConfirmed;
     if (
       dispatchAccepted &&
       !executionStarted &&
-      canRestoreAcceptedFailure &&
+      (!preStartAbortAttempted || preStartAbortConfirmed) &&
       params.shouldContinue?.() !== false
     ) {
       await repairAcceptedRecovery();
