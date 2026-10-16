@@ -33,6 +33,7 @@ export type PluginManifestTheme = {
   icons?: Record<string, string>;
   hats?: Record<string, string>;
   critters?: Record<string, { source: string; title?: string; crossMs?: number }>;
+  backgrounds?: Partial<Record<"light" | "dark", string>>;
 };
 
 /** Top-level plugin manifest format. */
@@ -400,6 +401,8 @@ export type PluginManifestBackupResource = {
   disposition: "include" | "regenerable";
   scope: "state" | "agent";
   relativePath: string;
+  /** Shared-state databases retained under this state-scoped resource. */
+  databaseFamily?: "state";
 };
 
 /** Provider-authored limits and result semantics available before runtime activation. */

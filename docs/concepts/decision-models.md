@@ -51,10 +51,13 @@ Configure the provider plugin before selecting its model:
   and the OpenAI Platform Decisions API. Configure an OpenAI API key;
   ChatGPT/Codex subscription credentials do not authorize this endpoint.
   Evaluations send the supplied evidence to OpenAI and incur Platform usage charges.
-- [TypeSafe AI](/plugins/typesafe) connects to hosted Jev or a local System One
+- [TypeSafe AI](/plugins/typesafe) connects to hosted Jev or a self-hosted System One
   server such as Kev. Install and enable the external plugin, then configure a
-  protected hosted credential or an explicit loopback `baseUrl`. Hosted
-  evaluations send the selected evidence to TypeSafe and incur its normal usage charges.
+  protected hosted credential, the existing loopback setting, or a
+  [standard model-provider endpoint](/plugins/typesafe#custom-endpoint-and-provider-request-settings)
+  through `models.providers.typesafe`. Evaluations send user content to that
+  endpoint; hosted calls incur TypeSafe's normal charges. Select `typesafe/kev-latest`
+  for Kev; router-backed servers must use their own routing model ID.
 
 The current plugins declare these model references:
 
@@ -337,7 +340,11 @@ its [setup instructions](/plugins/typesafe#enable-and-configure).
 
 ## Provide models from a plugin
 
-A provider plugin implements `DecisionProviderV1` from
+New providers should use the [prepared V2 execution contract](/plugins/sdk-overview/capabilities#prepared-decision-execution-contract-version-2)
+with normal provider catalog and auth ownership. V1 remains supported through
+lossless codecs; native V2 features require a V2 caller and provider.
+
+A V1 provider plugin implements `DecisionProviderV1` from
 `openclaw/plugin-sdk/decisions` and registers it with
 `api.registerDecisionProvider(provider)`. Its `id` and `contractVersion: 1`
 identify the contract; `evaluate(batch, context)` returns validated typed answers
@@ -363,8 +370,10 @@ provider. It does not register a provider itself.
 Providers own model-specific input translation, transport or local inference,
 prepared credentials where needed, and physical cleanup on cancellation.
 Registration and optional `isReady()` must be synchronous and network-free;
-`isReady()` checks prepared credential availability, not model warmup. Return real
-model estimates rather than manufacturing certainty from a label-only response.
+`isReady()` checks prepared credential availability, not model warmup. Omitting it
+leaves readiness unconfirmed without blocking evaluation; returning `false`
+blocks evaluation until the provider reports ready. Return real model estimates
+rather than manufacturing certainty from a label-only response.
 
 The [provider contract](/plugins/sdk-overview/capabilities#decision-models-contract-version-1)
 owns the full SDK rules; the [manifest reference](/plugins/manifest/capabilities#decision-models-reference)

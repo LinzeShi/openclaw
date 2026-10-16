@@ -44,10 +44,7 @@ import {
   hydrateConfiguredExternalCliAuth,
   publishConfiguredModelRuntimeSnapshots,
 } from "./server-startup-model-runtime.js";
-import {
-  markGatewayStartupMainSessionOrphans,
-  runGatewayStartupObservers,
-} from "./server-startup-observers.js";
+import { runGatewayStartupObservers } from "./server-startup-observers.js";
 import {
   createGatewayStartupOutcomeRecorder,
   formatGatewayStartupOutcomes,
@@ -519,7 +516,7 @@ export async function startGatewayPostAttachRuntime(
     startChannels: () => Promise<void>;
     refreshChatMetadata?: () => Promise<void>;
     recoveryRuntime: GatewayRecoveryRuntime;
-    isRestartRecoverySuppressed: () => boolean;
+    mainSessionRecoveryStartupCheckedStorePaths: Set<string>;
     resolveGatewayContext: GatewayContextResolver;
     logHooks: {
       info: (msg: string) => void;
@@ -543,7 +540,6 @@ export async function startGatewayPostAttachRuntime(
     getCurrentPluginRegistry?: () => PluginRegistry;
     getCurrentPluginServices?: () => PluginServicesHandle | null;
     getCurrentPluginMetadataSnapshot?: () => PluginMetadataSnapshot | undefined;
-    getCurrentActivationSourceConfig?: () => OpenClawConfig | null;
     getCronService?: () => PluginServiceCronHost | null | undefined;
     onChannelsStarted?: () => Awaitable<void>;
     onPluginServices?: (pluginServices: PluginServicesHandle | null) => void;
@@ -566,8 +562,8 @@ export async function startGatewayPostAttachRuntime(
   // The CLI's hidden capability flag supplies this typed internal handoff.
   // Rehearsal loads plugins without resuming copied jobs, services, or notices.
   const candidateCanary = params.updateCanary === true;
+  const subagentRecoverySettled = createDeferredCore();
   const controlUiRootLifecycle = params.controlUiRootLifecycle;
-  const mainSessionRecoveryStartupCheckedStorePaths = new Set<string>();
   const controlUiAssetsSidecar =
     !params.minimalTestGateway && controlUiRootLifecycle
       ? schedulePostReadySidecarTask({
@@ -666,33 +662,23 @@ export async function startGatewayPostAttachRuntime(
       return startupLogPromise;
     }
     // Sidecar failure can settle public readiness before this producer finishes.
-    startupLogPromise = params.trackStartupWork(() => {
-      // A replacement can win while plugins load or startup logging is queued.
-      // Keep model, trust warnings, and loaded ids on that same runtime generation.
-      const startupRuntimeCurrent = params.pluginRuntimeClaim?.isCurrent() !== false;
-      const startupPluginRegistry = startupRuntimeCurrent
-        ? pluginRegistry
-        : (params.getCurrentPluginRegistry?.() ?? pluginRegistry);
-      return measureStartup(params.startupTrace, "post-attach.log", () =>
+    startupLogPromise = params.trackStartupWork(() =>
+      measureStartup(params.startupTrace, "post-attach.log", () =>
         runtimeDeps.logGatewayStartup({
-          cfg: startupRuntimeCurrent ? params.cfgAtStart : params.getConfig(),
-          activationSourceConfig: startupRuntimeCurrent
-            ? params.activationSourceConfig
-            : (params.getCurrentActivationSourceConfig?.() ?? undefined),
+          cfg: params.cfgAtStart,
+          activationSourceConfig: params.activationSourceConfig,
           env: process.env,
-          manifestRecords: startupRuntimeCurrent
-            ? params.pluginManifestRecords
-            : (params.getCurrentPluginMetadataSnapshot?.()?.plugins ?? []),
+          manifestRecords: params.pluginManifestRecords,
           ...(params.ambientEnvTriggers ? { ambientEnvTriggers: params.ambientEnvTriggers } : {}),
-          loadedPluginIds: startupPluginRegistry.plugins
+          loadedPluginIds: pluginRegistry.plugins
             .filter((plugin) => plugin.status === "loaded")
             .map((plugin) => plugin.id),
           log: params.log,
           isNixMode: params.isNixMode,
           startupStartedAt: params.startupStartedAt,
         }),
-      );
-    });
+      ),
+    );
     void startupLogPromise.catch(() => {});
     assignStartupLogOwner(startupLogPromise);
     return startupLogPromise;
@@ -730,19 +716,7 @@ export async function startGatewayPostAttachRuntime(
             skipStartupLog();
             return pluginRegistry;
           }
-          const prepared = await Promise.allSettled([
-            candidateCanary
-              ? Promise.resolve()
-              : markGatewayStartupMainSessionOrphans(
-                  params,
-                  mainSessionRecoveryStartupCheckedStorePaths,
-                ),
-            loadStartupPluginsIfNeeded(),
-          ]);
-          const failed = prepared.find((outcome) => outcome.status === "rejected");
-          if (failed?.status === "rejected") {
-            throw failed.reason;
-          }
+          await loadStartupPluginsIfNeeded();
           if (params.isClosing?.()) {
             skipStartupLog();
             return pluginRegistry;
@@ -874,8 +848,10 @@ export async function startGatewayPostAttachRuntime(
                 delayMs: 0,
                 getConfig: params.getConfig,
                 shouldContinue: () => params.isClosing?.() !== true,
-                startupCheckedStorePaths: mainSessionRecoveryStartupCheckedStorePaths,
-                waitForStart: params.waitForPostReadyWork,
+                startupCheckedStorePaths: params.mainSessionRecoveryStartupCheckedStorePaths,
+                // Requester continuations need the restored cohort's Gateway binding
+                // and operator authority before their first recovery attempt.
+                waitForStart: () => subagentRecoverySettled.promise,
                 gatewayRuntime: params.recoveryRuntime,
               });
             }
@@ -950,6 +926,7 @@ export async function startGatewayPostAttachRuntime(
             | undefined,
         isClosing: params.isClosing,
         waitForPostReadyWork: params.waitForPostReadyWork,
+        onSubagentRecoverySettled: subagentRecoverySettled.resolve,
         startupTrace: params.startupTrace,
         log: params.log,
         logHooks: params.logHooks,
@@ -962,7 +939,8 @@ export async function startGatewayPostAttachRuntime(
     })
     .catch((err: unknown) => {
       params.log.warn(`gateway sidecars failed to start: ${String(err)}`);
-    });
+    })
+    .finally(subagentRecoverySettled.resolve);
 
   if (params.sidecarStartup !== "defer") {
     await sidecarsPromise;
