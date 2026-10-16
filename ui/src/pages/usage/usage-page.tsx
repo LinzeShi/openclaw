@@ -1,18 +1,28 @@
-import { createEffect, createMemo, createSignal } from "solid-js";
+import { createEffect, createMemo } from "solid-js";
+import type { SessionsUsageResult } from "../../api/types.ts";
 import type { ApplicationContext } from "../../app/context-types.ts";
 import { useApplication } from "../../lib/reactive/context.ts";
-import { defineSolidBridge } from "../../lit/solid-bridge.ts";
 import { UsagePageShell } from "./page-shell.tsx";
 import type { UsageProps, UsageRouteData } from "./types.ts";
-import { UsagePageModel } from "./usage-page-model.ts";
+import { createUsagePage } from "./usage-page-state.ts";
 import { renderUsage as UsageView } from "./view.tsx";
 
-export type { UsageRouteData } from "./types.ts";
+export function UsagePage(props: { routeData?: UsageRouteData }) {
+  const context = useApplication();
+  const page = createUsagePage(context);
+  const routeData = createMemo(() => props.routeData);
+  createEffect(routeData, (data) => page.setRouteData(data));
+  return (
+    <openclaw-usage-page>
+      <UsagePageContent state={page.read()} context={context} result={page.result()} />
+    </openclaw-usage-page>
+  );
+}
 
 export function UsagePageContent(props: {
   state: UsageProps;
   context: ApplicationContext;
-  result: UsagePageModel["usageResult"];
+  result: SessionsUsageResult | null;
 }) {
   return (
     <UsagePageShell context={props.context} result={props.result}>
@@ -21,32 +31,10 @@ export function UsagePageContent(props: {
   );
 }
 
-function UsagePageBody(props: { routeData?: UsageRouteData }) {
-  const context = useApplication();
-  const [revision, setRevision] = createSignal(0);
-  const model = new UsagePageModel(context, () => setRevision((value) => value + 1));
-  const state = createMemo(() => {
-    revision();
-    return model.read();
-  });
-  createEffect(
-    () => context,
-    () => {
-      model.connect();
-      return () => model.dispose();
-    },
-  );
-  createEffect(
-    () => props.routeData,
-    (data) => model.setRouteData(data),
-  );
-  return (
-    <UsagePageContent state={state()} context={context} result={(revision(), model.usageResult)} />
-  );
+declare module "@solidjs/web" {
+  namespace JSX {
+    interface IntrinsicElements {
+      "openclaw-usage-page": HTMLAttributes<HTMLElement>;
+    }
+  }
 }
-
-export const UsagePage = defineSolidBridge<{ routeData: UsageRouteData | undefined }>(
-  "openclaw-usage-page",
-  (props) => <UsagePageBody routeData={props.routeData} />,
-  { properties: { routeData: { default: undefined, attribute: false } } },
-);

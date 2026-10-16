@@ -1,38 +1,22 @@
-import { isMap, isScalar, isSeq, type Node, type Pair } from "yaml";
+import { isMap, isScalar, isSeq, type Node } from "yaml";
 import type { OcPath } from "../oc-path.js";
 import {
   isPositionalSeg,
   parseArrayIndexSegment,
   resolvePositionalSeg,
   splitOcPathSlots,
+  unquoteSeg,
 } from "../oc-path.js";
 import type { YamlAst } from "./ast.js";
 
 type YamlOcPathMatch =
   | { readonly kind: "root"; readonly node: YamlAst }
-  | {
-      readonly kind: "scalar";
-      readonly value: unknown;
-      readonly path: readonly unknown[];
-      readonly node: Node;
-    }
-  | {
-      readonly kind: "map";
-      readonly path: readonly unknown[];
-      readonly node: Node;
-    }
-  | {
-      readonly kind: "seq";
-      readonly path: readonly unknown[];
-      readonly node: Node;
-    }
-  | {
-      readonly kind: "pair";
-      readonly key: string;
-      readonly value: unknown;
-      readonly path: readonly unknown[];
-      readonly node: Node;
-    };
+  | ({ readonly node: Node; readonly path: readonly unknown[] } & (
+      | { readonly kind: "scalar"; readonly value: unknown }
+      | { readonly kind: "map" }
+      | { readonly kind: "seq" }
+      | { readonly kind: "pair"; readonly key: string; readonly value: unknown }
+    ));
 
 export function resolveYamlOcPath(ast: YamlAst, path: OcPath): YamlOcPathMatch | null {
   const segments = splitOcPathSlots(path.section, path.item, path.field);
@@ -53,49 +37,49 @@ function walkNode(
   if (node === null) {
     return null;
   }
-  let seg = segments[i];
+  const rawSeg = segments[i];
 
-  if (seg === undefined) {
+  if (rawSeg === undefined) {
     if (isMap(node)) {
-      return { kind: "map", path: walked, node };
+      return { kind: "map", node, path: walked };
     }
     if (isSeq(node)) {
-      return { kind: "seq", path: walked, node };
+      return { kind: "seq", node, path: walked };
     }
     if (isScalar(node)) {
-      return { kind: "scalar", value: node.value, path: walked, node };
+      return { kind: "scalar", node, value: node.value, path: walked };
     }
     return null;
   }
+  let seg = unquoteSeg(rawSeg);
   if (seg.length === 0) {
     return null;
   }
 
-  if (isPositionalSeg(seg)) {
-    const concrete = resolveYamlPositionalSegment(node, seg);
+  if (isPositionalSeg(rawSeg)) {
+    const concrete = resolveYamlPositionalSegment(node, rawSeg);
     if (concrete !== null) {
       seg = concrete;
     }
   }
 
   if (isMap(node)) {
-    const pair = (node as { items: Pair[] }).items.find((p) => {
+    const pair = node.items.find((p) => {
       const k = isScalar(p.key) ? p.key.value : p.key;
       return String(k) === seg;
     });
     if (pair === undefined) {
       return null;
     }
-    // Preserve primitive key types; object identities do not survive cloning for writes.
-    const key = isScalar(pair.key) ? pair.key.value : pair.key;
-    const childWalked = [...walked, key !== null && typeof key === "object" ? seg : key];
+    const key = isScalar(pair.key) ? pair.key.value : seg;
+    const childWalked = [...walked, key];
     if (i === segments.length - 1 && isScalar(pair.value)) {
       return {
         kind: "pair",
+        node: pair.value,
         key: seg,
         value: pair.value.value,
         path: childWalked,
-        node: pair.value,
       };
     }
     return walkNode(pair.value as Node, segments, i + 1, childWalked);
@@ -107,7 +91,7 @@ function walkNode(
       return null;
     }
     const child = node.items[idx];
-    return walkNode(child as Node, segments, i + 1, [...walked, seg]);
+    return walkNode(child as Node, segments, i + 1, [...walked, idx]);
   }
 
   return null;
@@ -115,8 +99,7 @@ function walkNode(
 
 export function resolveYamlPositionalSegment(node: Node, seg: string): string | null {
   if (isMap(node)) {
-    const pairs = (node as { items: Pair[] }).items;
-    const keys = pairs.map((p) => String(isScalar(p.key) ? p.key.value : p.key));
+    const keys = node.items.map((p) => String(isScalar(p.key) ? p.key.value : p.key));
     return resolvePositionalSeg(seg, { indexable: false, size: keys.length, keys });
   }
   if (isSeq(node)) {

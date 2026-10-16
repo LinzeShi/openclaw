@@ -164,7 +164,7 @@ describe("memory actor transcript", () => {
             message: original,
             eventId: "prepared-1",
             preparationVersion: before,
-            preparedMessage: { prepared: true, expected: undefined, message: accepted },
+            preparedMessage: { prepared: true, message: accepted },
           },
         ]),
       ),
@@ -177,7 +177,6 @@ describe("memory actor transcript", () => {
             preparationVersion: before,
             preparedMessage: {
               prepared: true,
-              expected: { messageId: "prepared-1", message: accepted },
               message: { ...original, content: "Must not replace the accepted message" },
             },
           },
@@ -197,7 +196,7 @@ describe("memory actor transcript", () => {
           {
             message: { ...original, idempotencyKey: "suppressed" },
             preparationVersion: before,
-            preparedMessage: { prepared: true, expected: undefined, message: undefined },
+            preparedMessage: { prepared: true, message: undefined },
             expectedTranscript: before,
           },
         ]),
@@ -205,20 +204,6 @@ describe("memory actor transcript", () => {
     );
     expect(skipped.receipt.transcript.appendedMessages).toEqual([]);
     expect(skipped.receipt.transcript.after).toEqual(replay.receipt.transcript.after);
-    const snapshot = actor.snapshot(authority);
-    const stale = await append(
-      turn([
-        {
-          message: original,
-          preparedMessage: { prepared: true, expected: undefined, message: accepted },
-        },
-      ]),
-    );
-    expect(stale).toMatchObject({
-      kind: "rolled-back",
-      error: { message: "Transcript idempotency changed while preparing the turn" },
-    });
-    expect(actor.snapshot(authority)).toEqual(snapshot);
   });
 
   it("promotes accepted pending bytes, consumes custody once, and rejects a mismatched owner", async () => {
@@ -281,7 +266,6 @@ describe("memory actor transcript", () => {
           message: { ...message, content: "New host candidate" },
           preparedMessage: {
             prepared: false,
-            expected: undefined,
             message: { ...message, content: "New prepared candidate" },
           },
         },
@@ -373,6 +357,74 @@ describe("memory actor transcript", () => {
       transcriptInputId: "relocated",
       consumedInputIds: [],
     });
+  });
+
+  it("replays collected promotion when its transcript identity differs from source input identity", async () => {
+    const { actor, append } = await fixture();
+    const message = {
+      role: "user",
+      content: "Collected input",
+      timestamp: 2,
+      idempotencyKey: "collected",
+    };
+    const messageJson = JSON.stringify(message);
+    const source: SessionPendingInputWorkerFacts = {
+      agentId: "main",
+      databaseAgentId: "main",
+      databasePath: path,
+      sessionKey,
+      sessionId,
+      inputId: "source-input",
+      transcriptInputId: "collected-transcript",
+      idempotencyKey: "collected",
+      lifecycleGeneration: "life-1",
+      messageJson,
+    };
+    committed(
+      await actor.acceptInput(
+        {
+          commandId: "stage-collected",
+          phaseId: "turn",
+          expectedState: buildRestartRecoveryExpectedState({ sessionId, updatedAt: 1 }),
+          lifecycle: {},
+          pending: {
+            kind: "stage",
+            sessionKey,
+            sessionId,
+            idempotencyKey: source.idempotencyKey,
+            inputId: source.inputId,
+            runId: "run-1",
+            requestHash: "request-1",
+            lifecycleGeneration: source.lifecycleGeneration,
+            messageJson,
+            trackCompletion: true,
+            expected: {
+              kind: "stage",
+              current: true,
+              existing: undefined,
+              previous: undefined,
+              committed: undefined,
+            },
+          },
+        },
+        authority,
+      ),
+    );
+    const plan = { ...turn([{ message }]), custody: { ...source, sources: [source] } };
+    const first = committed(await append(plan));
+    expect(first.receipt.pendingInputReceipt).toEqual({
+      transcriptInputId: "collected-transcript",
+      consumedInputIds: ["source-input"],
+    });
+    const replay = committed(await append(plan));
+    expect(replay.receipt.transcript.appendedMessages).toMatchObject([
+      { appended: false, messageId: "collected-transcript", message },
+    ]);
+    expect(replay.receipt.pendingInputReceipt).toEqual({
+      transcriptInputId: "collected-transcript",
+      consumedInputIds: [],
+    });
+    expect(replay.receipt.transcript.after).toEqual(first.receipt.transcript.after);
   });
 
   it("rebases active appends, preserves explicit branches, and rolls back a mixed atomic batch", async () => {
