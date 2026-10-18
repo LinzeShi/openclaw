@@ -225,6 +225,15 @@ describe("structural rejection", () => {
     expect(() => parseOcPath("oc://X/{a,,b}")).toThrow(/Empty alternative/);
   });
 
+  it.each(["{{a,,b},c}", "{a,{b,,c}}", "{{{a,,b},c},d}", "{a,{}}"])(
+    "rejects malformed nested union %s before traversal",
+    (pattern) => {
+      expect(() => parseOcPath("oc://X/" + pattern)).toThrow(
+        expect.objectContaining({ code: "OC_PATH_MALFORMED_UNION" }),
+      );
+    },
+  );
+
   it("rejects empty dotted sub-segment in formatOcPath output", () => {
     expect(() => formatOcPath({ file: "a.md", section: "foo." })).toThrow(/Empty dotted/);
     expect(() => formatOcPath({ file: "a.md", section: ".foo" })).toThrow(/Empty dotted/);

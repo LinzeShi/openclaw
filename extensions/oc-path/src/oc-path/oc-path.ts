@@ -729,12 +729,18 @@ function validateSubSegment(sub: string, input: string): void {
         "OC_PATH_MALFORMED_UNION",
       );
     }
-    if (splitRespectingBrackets(inner, ",").some((a) => a.length === 0)) {
+    const alternatives = splitRespectingBrackets(inner, ",");
+    if (alternatives.some((a) => a.length === 0)) {
       fail(
         `Empty alternative in union "${sub}": ${printable(input)}`,
         input,
         "OC_PATH_MALFORMED_UNION",
       );
+    }
+    for (const alternative of alternatives) {
+      if (isUnionSeg(alternative)) {
+        validateSubSegment(alternative, input);
+      }
     }
   }
 }
