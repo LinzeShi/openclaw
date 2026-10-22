@@ -40,7 +40,7 @@ describe("empty string keys", () => {
       suffix: '""/value',
     },
   ])("finds, resolves, and edits $suffix in $file", ({ file, parse, raw, suffix }) => {
-    const ast = parse(raw).ast;
+    const ast = parse(raw);
     const prefix = "oc://" + file;
     const results = findOcPaths(ast, parseOcPath(prefix + "/*"));
     expect(results.map(({ path }) => formatOcPath(path))).toEqual([
@@ -67,7 +67,7 @@ describe("empty string keys", () => {
     { file: "f.yaml", parse: parseYaml },
     { file: "f.jsonl/L1", parse: parseJsonl },
   ])("does not treat an empty key as array index zero in $file", ({ file, parse }) => {
-    const ast = parse('["unchanged"]\n').ast;
+    const ast = parse('["unchanged"]\n');
     const target = parseOcPath("oc://" + file + '/""');
     expect(resolveOcPath(ast, target)).toBeNull();
     expect(() => setOcPath(ast, target, "new")).toThrow(
