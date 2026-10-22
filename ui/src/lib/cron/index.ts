@@ -18,7 +18,7 @@ import { isReadOnlyCronPayload, jobToForm, normalizeCronFormState } from "./form
 import { loadCronJobsPage } from "./jobs-full.ts";
 import { retireCronJobsRequest } from "./jobs.ts";
 import { buildCronPayload } from "./payload.ts";
-import { cronRunNotStartedMessage } from "./run-feedback.ts";
+import { cronRunNotStartedMessage, isCronRunNotStartedNotice } from "./run-feedback.ts";
 import { clearCronRunsPage, loadCronRuns, retireCronRunsRequest } from "./runs.ts";
 import {
   DEFAULT_CRON_FORM,
@@ -153,37 +153,41 @@ export function hasCronFormErrors(errors: CronFieldErrors): boolean {
 
 const activeCronMutations = new WeakMap<CronState, object>();
 
+type CronFeedbackField = "cronError" | "cronNotice";
+
 async function withCronBusy(
   state: CronState,
   job: Pick<CronJob, "id" | "name" | "displayName"> | undefined,
   run: (
     client: GatewayBrowserClient,
-    reportFeedback: (message: string) => void,
+    reportFeedback: (message: string, field?: CronFeedbackField) => void,
     isCurrent: () => boolean,
   ) => Promise<void>,
-) {
+): Promise<string | null | void> {
   const client = state.client;
   if (!client || !state.connected || state.cronBusy) {
-    return;
+    return undefined;
   }
   const target = job ? { id: job.id, name: job.displayName ?? job.name } : null;
   const operation = {};
   activeCronMutations.set(state, operation);
   const isCurrent = () => activeCronMutations.get(state) === operation;
-  const reportFeedback = (message: string) => {
+  const reportFeedback = (message: string, field: CronFeedbackField = "cronError") => {
     if (!isCurrent()) {
       return;
     }
-    state.cronError =
+    state[field] =
       target && state.cronEditingJob?.id !== target.id ? `${target.name}: ${message}` : message;
   };
   retireCronStatusFeedback(state);
   state.cronBusy = true;
   state.cronError = null;
+  state.cronNotice = null;
   try {
     await run(client, reportFeedback, isCurrent);
   } catch (err) {
     reportFeedback(formatUiError(err));
+    return isCurrent() ? state.cronError : null;
   } finally {
     if (isCurrent()) {
       activeCronMutations.delete(state);
@@ -191,6 +195,7 @@ async function withCronBusy(
       state.cronBusy = false;
     }
   }
+  return undefined;
 }
 
 function requireCronConfigRevision(revision: string | null | undefined): string {
@@ -230,6 +235,7 @@ export function updateCronJobsFilter(
 function clearCronEditState(state: CronState) {
   retireCronSelectedJobRead(state);
   state.cronError = null;
+  state.cronNotice = null;
   state.cronEditingJob = null;
   state.cronCloningJob = null;
 }
@@ -576,13 +582,16 @@ export async function runCronJob(state: CronState, jobId: string, mode: "force" 
     state.cronEditingJob?.id === jobId
       ? state.cronEditingJob
       : (state.cronJobs.find((candidate) => candidate.id === jobId) ?? { id: jobId, name: jobId });
-  await withCronBusy(state, job, async (client, reportFeedback, isCurrent) => {
+  return withCronBusy(state, job, async (client, reportFeedback, isCurrent) => {
     const result = await client.request<CronRunResult>("cron.run", { id: jobId, mode });
     if (!isCurrent()) {
       return;
     }
     if (!result.ok || ("ran" in result && !result.ran)) {
-      reportFeedback(cronRunNotStartedMessage(result));
+      reportFeedback(
+        cronRunNotStartedMessage(result),
+        isCronRunNotStartedNotice(result) ? "cronNotice" : "cronError",
+      );
       // Invalid persisted specs create a skipped history entry with diagnostics;
       // true no-op outcomes have no new history to fetch.
       if ("reason" in result && result.reason === "invalid-spec") {
@@ -592,7 +601,7 @@ export async function runCronJob(state: CronState, jobId: string, mode: "force" 
     }
     await loadCronRuns(state);
     if ("enqueued" in result && result.enqueued) {
-      reportFeedback(`Run queued. Run ID: ${result.runId}`);
+      reportFeedback(`Run queued. Run ID: ${result.runId}`, "cronNotice");
     }
   });
 }
@@ -637,6 +646,7 @@ export function invalidateCronMutation(state: CronState) {
 function setCronEditState(state: CronState, job: CronJob, form: CronFormState) {
   retireCronSelectedJobRead(state);
   state.cronError = null;
+  state.cronNotice = null;
   state.cronEditingJob = job;
   state.cronCloningJob = null;
   state.cronRunsJobId = job.id;
