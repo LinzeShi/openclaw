@@ -42,7 +42,7 @@ import {
 } from "../agents/embedded-agent-runner/run/attempt-tool-construction-plan.js";
 import { runAgentCleanupStep } from "../agents/run-cleanup-timeout.js";
 import { loadAgentRuntimePluginRegistryHandle } from "../agents/runtime-plugins.js";
-import { resolveSandboxContext } from "../agents/sandbox.js";
+import { resolveSandboxContext } from "../agents/sandbox/context.js";
 import {
   resolveScheduledToolPolicyContext,
   type ScheduledToolPolicyContext,
@@ -497,6 +497,14 @@ function createCronCodeModeRunner(deps: CronTriggerEvaluatorDeps) {
       const runtime = retained.runtime;
       releaseRuntime = retained.release;
       admission = prepareCronRunAdmission({
+        scheduledExecution: params.occurrence.mint({
+          cfg: runtime.context.config,
+          agentId: runtime.context.agentId,
+          runId,
+          runSessionKey: runtime.context.sessionKey,
+          toolsAllow: request.toolsAllow,
+          operatorAuthorityRestored: false,
+        }),
         cfg: runtime.context.config,
         runId,
         agentId: runtime.context.agentId,
