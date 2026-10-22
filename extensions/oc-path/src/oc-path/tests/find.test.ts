@@ -197,7 +197,7 @@ describe("quoted union targets", () => {
     { key: 'a,,"b', pattern: '{{"a,,\\"b",missing},plain}' },
     { key: "{a,,b}", pattern: '{"{a,,b}",plain}' },
   ])("keeps commas inside the quoted union key $key", ({ key, pattern }) => {
-    const ast = parseJsonc(JSON.stringify({ [key]: "selected", plain: "sibling" })).ast;
+    const ast = parseJsonc(JSON.stringify({ [key]: "selected", plain: "sibling" }));
     const out = findOcPaths(ast, parseOcPath("oc://f.json/" + pattern));
     expect(leafValues(out)).toEqual(["selected", "sibling"]);
     for (const { path, match } of out) {
