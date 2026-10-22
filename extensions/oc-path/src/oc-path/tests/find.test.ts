@@ -432,6 +432,30 @@ describe("numeric predicates", () => {
 describe("findOcPaths — Markdown", () => {
   const md = parseMd("## Tools\n\n- foo: a\n- foo: b\n- bar: c\n");
 
+  it("quotes empty Markdown slugs in reusable expanded paths", () => {
+    const raw = "## 日本語\n- !!!: old\n- plain: keep\n";
+    const ast = parseMd(raw);
+    const address = 'oc://notes.md/""/""/!!!';
+    for (const pattern of [
+      'oc://notes.md/""/""/*',
+      'oc://notes.md/""/*/!!!',
+      'oc://notes.md/*/""/!!!',
+      "oc://notes.md/*/*/!!!",
+    ]) {
+      const out = findOcPaths(ast, parseOcPath(pattern));
+      expect(out.map(({ path }) => formatOcPath(path))).toEqual([address]);
+      expect(leafValues(out)).toEqual(["old"]);
+      for (const { path, match } of out) {
+        const concrete = parseOcPath(formatOcPath(path));
+        expect(resolveOcPath(ast, concrete)).toEqual(match);
+        expect(setOcPath(ast, concrete, "changed").raw).toBe(
+          raw.replace("!!!: old", "!!!: changed"),
+        );
+      }
+      expect(ast.raw).toBe(raw);
+    }
+  });
+
   it("keeps quoted Markdown field paths usable after expansion and formatting", () => {
     for (const key of ["model name", "model.id", "a/b", 'say "hi"', "a\\b", "*", "$last", "+"]) {
       const raw = `## Settings\n- ${key}: old\n- plain: keep\n`;

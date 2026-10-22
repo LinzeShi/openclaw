@@ -644,7 +644,7 @@ const mdOps: WalkOps<MdLevel> = {
       for (const block of level.ast.blocks) {
         const child = { kind: "block" as const, block };
         if (!matches || matches(child)) {
-          yield { keySub: block.slug, child };
+          yield { keySub: quoteSeg(block.slug), child };
         }
       }
       return;
@@ -656,7 +656,7 @@ const mdOps: WalkOps<MdLevel> = {
       for (const [idx, item] of level.block.items.entries()) {
         const child = { kind: "item" as const, item };
         if (!matches || matches(child)) {
-          const seg = (counts.get(item.slug) ?? 0) > 1 ? `#${idx}` : item.slug;
+          const seg = (counts.get(item.slug) ?? 0) > 1 ? `#${idx}` : quoteSeg(item.slug);
           yield { keySub: seg, child };
         }
       }
@@ -666,7 +666,9 @@ const mdOps: WalkOps<MdLevel> = {
     if (level.kind === "root") {
       const target = unquoteSeg(key).toLowerCase();
       const block = level.ast.blocks.find((b) => b.slug === target);
-      return block === undefined ? null : { keySub: block.slug, child: { kind: "block", block } };
+      return block === undefined
+        ? null
+        : { keySub: quoteSeg(block.slug), child: { kind: "block", block } };
     }
     if (level.kind === "block") {
       if (isOrdinalSeg(key)) {
@@ -684,7 +686,9 @@ const mdOps: WalkOps<MdLevel> = {
       }
       const target = unquoteSeg(key).toLowerCase();
       const item = level.block.items.find((it) => it.slug === target);
-      return item === undefined ? null : { keySub: item.slug, child: { kind: "item", item } };
+      return item === undefined
+        ? null
+        : { keySub: quoteSeg(item.slug), child: { kind: "item", item } };
     }
     return null;
   },
