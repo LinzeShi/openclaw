@@ -143,17 +143,17 @@ describe("universal verbs — yaml timestamp keys", () => {
             ? [timestampRow, stringRow]
             : [stringRow, timestampRow];
       const raw = `%YAML 1.1\n---\n${rows.join("\n")}\n`;
-      const ast = parseYaml(raw).ast;
-      const path = parseOcPath(`oc://x.yaml/${JSON.stringify(spelling)}`);
-      expect(resolveOcPath(ast, path)).toMatchObject({
+      const ast = parseYaml(raw);
+      const targetPath = parseOcPath(`oc://x.yaml/${JSON.stringify(spelling)}`);
+      expect(resolveOcPath(ast, targetPath)).toMatchObject({
         valueText: order === "string first" ? "untouched" : "original",
         line: 3,
       });
       if (order === "string first") {
-        const result = setOcPath(ast, path, "updated");
+        const result = setOcPath(ast, targetPath, "updated");
         expect(result.raw).toBe(raw.replace(": untouched", ": updated"));
       } else {
-        expect(() => setOcPath(ast, path, "updated")).toThrow(
+        expect(() => setOcPath(ast, targetPath, "updated")).toThrow(
           expect.objectContaining({ reason: "unresolved" }),
         );
       }
