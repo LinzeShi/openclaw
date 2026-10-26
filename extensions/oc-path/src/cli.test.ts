@@ -370,7 +370,7 @@ describe("openclaw path CLI", () => {
       const { workspaceDir, filePath } = fileFixture("AGENTS.md");
       writeFileSync(
         filePath,
-        "---\nnote: old\nother: original\n---\n\n## Tasks\n- Keep this item\n",
+        "---\nnote: old # keep\nother: original\n---\n\n## Tasks\n- Keep this item\n",
       );
       const options = { cwd: workspaceDir, json: true };
       const target = "oc://AGENTS.md/[frontmatter]/note";
@@ -391,6 +391,7 @@ describe("openclaw path CLI", () => {
       expect(reread.exitCode, stderrText(reread)).toBe(0);
       expect(JSON.parse(stdoutText(reread)).match.valueText).toBe(value);
       expect(readFileSync(filePath, "utf8")).toContain("## Tasks\n- Keep this item");
+      expect(readFileSync(filePath, "utf8")).toContain(" # keep\nother: updated");
     });
 
     it.each([
@@ -526,6 +527,20 @@ describe("openclaw path CLI", () => {
         value: "oops",
         expected: { ok: false, reason: "parse-error", detail: 'cannot coerce "oops" to number' },
       },
+      ...["jsonc", "jsonl"].flatMap((kind) =>
+        ["", " \t\r\n "].map((value) => ({
+          label: `blank ${kind} number ${JSON.stringify(value)}`,
+          file: `config.${kind}`,
+          before: '{"count":1}\n',
+          path: `oc://config.${kind}/${kind === "jsonl" ? "L1/" : ""}count`,
+          value,
+          expected: {
+            ok: false,
+            reason: "parse-error",
+            detail: `cannot coerce "${value}" to number`,
+          },
+        })),
+      ),
       {
         label: "keyed insertion into an array",
         file: "config.jsonc",
