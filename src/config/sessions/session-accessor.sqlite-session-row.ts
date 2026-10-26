@@ -6,8 +6,33 @@ import {
 import { normalizeSessionRowChatType, normalizeText } from "./session-accessor.sqlite-normalize.js";
 import { bindSessionEntryProvenance } from "./session-accessor.sqlite-provenance.js";
 import { normalizeStatus } from "./session-accessor.sqlite-status.js";
+import type { SessionEntryNumericSnapshot } from "./session-entry-numeric-snapshot.js";
 import { deriveSessionPredicateColumns } from "./session-predicate-columns.js";
+import { resolveSessionWindowCreatedAt } from "./session-window-created-at.js";
 import type { SessionEntry } from "./types.js";
+
+/** Doctor carries only numeric fields it converted; unrelated indexed facts stay untouched. */
+export function bindSessionEntryNumericChanges(changes: SessionEntryNumericSnapshot) {
+  return {
+    node: {
+      ...(changes.createdAt !== undefined ? { created_at: changes.createdAt } : {}),
+      ...(changes.pinnedAt !== undefined ? { pinned_at: changes.pinnedAt } : {}),
+      ...(changes.archivedAt !== undefined ? { archived_at: changes.archivedAt } : {}),
+      ...(changes.lastReadAt !== undefined ? { last_read_at: changes.lastReadAt } : {}),
+      ...(changes.lastInteractionAt !== undefined
+        ? { last_interaction_at: changes.lastInteractionAt }
+        : {}),
+      ...(changes.lastActivityAt !== undefined ? { last_activity_at: changes.lastActivityAt } : {}),
+    },
+    window:
+      changes.startedAt !== undefined || changes.endedAt !== undefined
+        ? {
+            ...(changes.startedAt !== undefined ? { started_at: changes.startedAt } : {}),
+            ...(changes.endedAt !== undefined ? { ended_at: changes.endedAt } : {}),
+          }
+        : undefined,
+  };
+}
 
 export function bindSessionRoot(params: {
   entry: SessionEntry;
@@ -21,7 +46,7 @@ export function bindSessionRoot(params: {
     session_id: params.entry.sessionId,
     session_key: params.sessionKey,
     reason: null,
-    created_at: resolveSqliteSessionCreatedAt(params.entry, updatedAt),
+    created_at: resolveSessionWindowCreatedAt(params.entry, updatedAt),
     updated_at: updatedAt,
     ...bindSessionEntryProvenance(params.entry),
     ...bindSessionWindowEntryProjection(params),
@@ -120,15 +145,6 @@ function resolveSqliteSessionScope(
     return chatType;
   }
   return "conversation";
-}
-
-function resolveSqliteSessionCreatedAt(entry: SessionEntry, updatedAt: number): number {
-  for (const candidate of [entry.sessionStartedAt, entry.startedAt, entry.updatedAt, updatedAt]) {
-    if (typeof candidate === "number" && Number.isFinite(candidate) && candidate >= 0) {
-      return candidate;
-    }
-  }
-  return updatedAt;
 }
 
 function finiteSqliteNumber(value: unknown): number | null {

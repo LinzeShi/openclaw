@@ -2,7 +2,6 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createDisplayStringFormatter } from "./display-string.js";
 import { renderTable } from "./table.js";
 
 function stubHome(home: string, openclawHome = ""): void {
@@ -11,7 +10,17 @@ function stubHome(home: string, openclawHome = ""): void {
   vi.stubEnv("OPENCLAW_HOME", openclawHome);
 }
 
-describe("createDisplayStringFormatter", () => {
+function displayString(input: string): string | undefined {
+  return renderTable({
+    columns: [{ key: "value", header: "Path" }],
+    rows: [{ value: input }],
+  })
+    .split("\n")[3]
+    ?.slice(2, -2)
+    .trimEnd();
+}
+
+describe("renderTable home display", () => {
   afterEach(() => {
     vi.unstubAllEnvs();
   });
@@ -19,7 +28,6 @@ describe("createDisplayStringFormatter", () => {
   it("shortens whole-value homes and child paths without clipping sibling prefixes", () => {
     const home = path.resolve("test-home", "alice");
     stubHome(home);
-    const displayString = createDisplayStringFormatter();
 
     expect(displayString(home)).toBe("~");
     expect(displayString(`${home}/project`)).toBe("~/project");
@@ -42,7 +50,6 @@ describe("createDisplayStringFormatter", () => {
     const home = path.resolve("test-home", "alice");
     const openclawHome = path.resolve("test-openclaw-home");
     stubHome(home, openclawHome);
-    const displayString = createDisplayStringFormatter();
 
     expect(displayString(openclawHome)).toBe("$OPENCLAW_HOME");
     expect(displayString(`${openclawHome}/state`)).toBe("$OPENCLAW_HOME/state");
@@ -52,7 +59,6 @@ describe("createDisplayStringFormatter", () => {
   it("keeps replacement syntax literal when expanding OPENCLAW_HOME", () => {
     const home = path.resolve("test-home", "$&user");
     stubHome(home, "~/state");
-    const displayString = createDisplayStringFormatter();
 
     expect(displayString(path.join(home, "state", "project"))).toBe(
       `$OPENCLAW_HOME${path.sep}project`,
@@ -73,7 +79,6 @@ describe("createDisplayStringFormatter", () => {
         const fileUri = `file:${forwardAlias}`;
         expect(fs.statSync(new URL(fileUri)).isDirectory()).toBe(true);
         stubHome(home);
-        const displayString = createDisplayStringFormatter();
 
         expect(displayString(`Workspace: ${homeAlias}\\project`)).toBe("Workspace: ~\\project");
         expect(displayString(`İ Workspace: ${homeAlias}\\project`)).toBe("İ Workspace: ~\\project");
@@ -89,13 +94,6 @@ describe("createDisplayStringFormatter", () => {
         expect(displayString(`prefix${forwardAlias}/project`)).toBe(
           `prefix${forwardAlias}/project`,
         );
-        expect(
-          renderTable({
-            border: "none",
-            columns: [{ key: "Path", header: "Path" }],
-            rows: [{ Path: `${forwardAlias}/project` }],
-          }),
-        ).toBe("Path\n~/project\n");
       } finally {
         fs.rmSync(home, { recursive: true, force: true });
       }
@@ -104,7 +102,6 @@ describe("createDisplayStringFormatter", () => {
 
   it.skipIf(process.platform !== "win32")("shortens Windows UNC separator aliases", () => {
     stubHome("\\\\server\\share\\alice");
-    const displayString = createDisplayStringFormatter();
 
     expect(displayString("//SERVER/share/alice/project")).toBe("~/project");
     expect(displayString("//SERVER/share/alice2/project")).toBe("//SERVER/share/alice2/project");
@@ -114,8 +111,6 @@ describe("createDisplayStringFormatter", () => {
     }
     expect(displayString("Path: //SERVER/share/alice/project")).toBe("Path: ~/project");
     stubHome("", "\\\\server\\share\\alice");
-    expect(createDisplayStringFormatter()("//SERVER/share/alice/project")).toBe(
-      "$OPENCLAW_HOME/project",
-    );
+    expect(displayString("//SERVER/share/alice/project")).toBe("$OPENCLAW_HOME/project");
   });
 });
