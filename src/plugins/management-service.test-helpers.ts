@@ -2,17 +2,6 @@ import { managementMetadata } from "./management-service.test-support.js";
 import type { PluginManifestRecord } from "./manifest-registry.js";
 const path = "/tmp/openclaw.json";
 
-export function pluginConfig(
-  states: Record<string, boolean>,
-  policy: { allow?: string[]; deny?: string[]; load?: { paths: string[] } } = {},
-) {
-  const entries: Record<string, { enabled: boolean }> = {};
-  for (const [id, enabled] of Object.entries(states)) {
-    entries[id] = { enabled };
-  }
-  return { plugins: { ...policy, entries } };
-}
-
 export function configSnapshot(config: Record<string, unknown> = {}) {
   return {
     snapshot: { valid: true, parsed: {}, path, sourceConfig: config, hash: "base-hash" },
@@ -107,3 +96,15 @@ export const hostedFeedDiffsEntry = {
     ],
   },
 };
+
+export function mockHostedOfficialCatalog(
+  mock: { mockResolvedValue(value: unknown): unknown },
+  entries: unknown[],
+) {
+  mock.mockResolvedValue({
+    source: "hosted",
+    entries,
+    feed: { schemaVersion: 1, id: "test", generatedAt: "now", sequence: 1, entries: [] },
+    metadata: { url: "https://clawhub.ai/feed", status: 200, checksum: "hash" },
+  });
+}
