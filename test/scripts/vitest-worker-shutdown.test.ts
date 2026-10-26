@@ -1,4 +1,3 @@
-import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { setImmediate as nextTurn } from "node:timers/promises";
@@ -8,7 +7,6 @@ import * as managedChild from "../../scripts/lib/managed-child-process.mts";
 import { collectRuntimeImportClosure } from "../../scripts/lib/runtime-import-closure.mts";
 import type { VitestWorkerManifest } from "../../scripts/lib/vitest-worker-artifacts.mts";
 import { createVitestWorkerRun } from "../../scripts/lib/vitest-worker-run.mts";
-import { createVitestProcessCompletion } from "../../scripts/vitest-process-group.mts";
 import {
   fixtureReceiptClientSource,
   openFixtureReceiptChannel,
@@ -23,7 +21,6 @@ import { createPreparedVitestCliFixture } from "./run-vitest-bounded-fixture.tes
 import {
   createControlledWorkerCompiler,
   createWorkerArtifactTest,
-  preparationClient,
   writeFixture,
 } from "./vitest-worker-artifacts.test-support.js";
 
@@ -91,12 +88,9 @@ it
   "$route wrapper joins $phase work before honoring $shutdownSignal",
   ({ route, phase, shutdownSignal }, { workerArtifacts, signal, onTestFinished }) =>
     workerArtifacts.fixtureLifetime.run(async () => {
+      // Canceling the sole CI compiler still rejects disposal; settled signals retain their status.
       const expectedExitCode =
-        route.startsWith("ci") && phase !== "deletion"
-          ? 1
-          : shutdownSignal === "SIGINT"
-            ? 130
-            : 143;
+        route === "ci" && phase === "compilation" ? 1 : shutdownSignal === "SIGINT" ? 130 : 143;
       const root = workerArtifacts.fixtureDirectory();
       const input = writeFixture(root, "input", "owned verification input");
       const released = path.join(root, "release");
@@ -245,12 +239,13 @@ const waitForRelease=()=>new Promise(resolve=>{
   const poll=setInterval(check,50);
   check();
 });
-const readFile=fsp.readFile;
-fsp.readFile=async(filename,...args)=>{
+const readFile=fs.readFile;
+fs.readFile=(filename,...args)=>{
   if(filename===input && !held && (!ciRoot || phase!=='admission') && (phase==='admission' || (phase==='disposal' && borrowerClosed))) {
     held=true;
     publish('verification-ready',{owner:process.pid});
-    await waitForRelease();
+    void waitForRelease().then(()=>readFile(filename,...args));
+    return;
   }
   return readFile(filename,...args);
 };
@@ -491,7 +486,7 @@ it("rejects a live borrower when its owner closes during verification", ({
   signal,
 }) =>
   workerArtifacts.fixtureLifetime.run(async () => {
-    const { observeChild } = workerArtifacts.createFixtureCommands();
+    const { startPreparation } = workerArtifacts.createFixtureCommands();
     const controlled = createControlledWorkerCompiler(
       workerArtifacts.fixtureDirectory(),
       process.env,
@@ -499,24 +494,13 @@ it("rejects a live borrower when its owner closes during verification", ({
     );
     const owner = createVitestWorkerRun(controlled.env);
     const directory = owner.descriptor.directory;
-    const runManaged = managedChild.runManagedCommand;
-    const compilerLaunch = vi
-      .spyOn(managedChild, "runManagedCommand")
-      .mockImplementation((options) => {
-        if (
-          options.args?.[0] === path.join(repoRoot, "scripts/lib/vitest-worker-compiler.mts") &&
-          options.args[1] === directory
-        ) {
-          return runManaged({ ...options, args: controlled.args(directory) });
-        }
-        return runManaged(options);
-      });
+    const compilerLaunch = controlled.intercept(directory);
     const manifestFile = path.join(directory, "manifest.json");
     const started = createDeferred();
     const release = createDeferred();
-    const readFile = fs.promises.readFile.bind(fs.promises);
+    const readFile = fs.readFile.bind(fs);
     let held = false;
-    const reader = vi.spyOn(fs.promises, "readFile").mockImplementation(async (...args) => {
+    const reader = vi.spyOn(fs, "readFile").mockImplementation((...args) => {
       const filename = args[0];
       if (
         !held &&
@@ -528,7 +512,8 @@ it("rejects a live borrower when its owner closes during verification", ({
         if (Object.hasOwn(manifest.inputs, filename)) {
           held = true;
           started.resolve();
-          await release.promise;
+          void release.promise.then(() => readFile(...args));
+          return;
         }
       }
       return readFile(...args);
@@ -540,34 +525,14 @@ it("rejects a live borrower when its owner closes during verification", ({
     };
     signal.addEventListener("abort", stop, { once: true });
     try {
-      const child = spawn(process.execPath, ["--input-type=module", "--eval", preparationClient], {
-        detached: process.platform !== "win32",
-        stdio: ["ignore", "ignore", "pipe", "ipc"],
-      });
-      let stderr = "";
-      child.stderr!.on("data", (chunk) => {
-        stderr += String(chunk);
-      });
-      const completion = observeChild(
-        child,
-        owner.borrow(
-          child,
-          createVitestProcessCompletion({
-            child,
-            detached: process.platform !== "win32",
-          }),
-        ),
-      );
-      void workerArtifacts.fixtureLifetime.verifyCleanup(async () => {
-        await completion;
-      });
+      const { child, completion, stderr } = startPreparation(owner, process.env);
       await Promise.race([
         started.promise,
         completion.then(() => {
           throw new Error("Borrower exited before verification was held");
         }),
       ]);
-      expect(controlled.read()).toMatchObject([{ directory, inputs: 2, outputs: 2 }]);
+      expect(controlled.read()).toMatchObject([{ directory, inputs: 3, outputs: 3 }]);
       let disposed = false;
       const disposal = workerArtifacts.fixtureLifetime.track(
         owner.dispose().then(() => {
@@ -580,8 +545,8 @@ it("rejects a live borrower when its owner closes during verification", ({
       expect(child.signalCode).toBeNull();
       expect(fs.existsSync(directory)).toBe(true);
       release.resolve();
-      expect(await completion, stderr).toEqual({ code: 1, signal: null });
-      expect(stderr).toContain("owner is closing");
+      expect(await completion, stderr()).toEqual({ code: 1, signal: null });
+      expect(stderr()).toContain("owner is closing");
       await disposal;
       expect(fs.existsSync(directory)).toBe(false);
     } finally {
