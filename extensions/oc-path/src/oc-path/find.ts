@@ -566,9 +566,12 @@ function walkMd(
     return;
   }
 
-  // Item-level field slot is terminal — descending would loop.
+  // Fields are leaves; recursive wildcards may match zero segments around the key.
   if (level.kind === "item") {
-    walkMdItemField(level.item, cur, walked, context);
+    const fieldSubs = subs.slice(i).filter((sub) => sub.value !== WILDCARD_RECURSIVE);
+    if (fieldSubs.length <= 1) {
+      walkMdItemField(level.item, fieldSubs[0] ?? cur, walked, context);
+    }
     return;
   }
 

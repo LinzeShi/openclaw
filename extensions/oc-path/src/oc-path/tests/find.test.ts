@@ -377,7 +377,17 @@ describe("findOcPaths — Markdown", () => {
   });
 
   it("keeps quoted Markdown field paths usable after expansion and formatting", () => {
-    for (const key of ["model name", "model.id", "a/b", 'say "hi"', "a\\b", "*", "$last", "+"]) {
+    for (const key of [
+      "model name",
+      "model.id",
+      "a/b",
+      'say "hi"',
+      "a\\b",
+      "*",
+      "**",
+      "$last",
+      "+",
+    ]) {
       const raw = `## Settings\n- ${key}: old\n- plain: keep\n`;
       const ast = parseMd(raw);
       const address = `oc://notes.md/settings/#0/${JSON.stringify(key)}`;
@@ -435,6 +445,25 @@ describe("findOcPaths — Markdown", () => {
     const out = find(md, 'oc://AGENTS.md/{tools,"tools"}/*/foo');
     expect(out.map(({ path }) => path.item)).toEqual(["#0", "#1"]);
     expect(leafValues(out)).toEqual(["a", "b"]);
+  });
+
+  it.each([
+    ["name.absent", false],
+    ["name.*", false],
+    ["*.absent", false],
+    ["**.absent", false],
+    ["{name,absent}.absent", false],
+    ["[name=value].absent", false],
+    ["name.**", true],
+    ["**.name", true],
+    ["**.{name,absent}.**", true],
+    ["**.[name=value].**", true],
+    ["**.**", true],
+  ])("matches the complete terminal field pattern %s", (field, matches) => {
+    const ast = parseMd("## Settings\n- name: value\n");
+    const out = find(ast, `oc://notes.md/settings/*/${field}`);
+    expect(leafValues(out)).toEqual(matches ? ["value"] : []);
+    expectRoundTrips(ast, out);
   });
 
   it("keeps item nodes when a recursive wildcard consumes the item slot", () => {
