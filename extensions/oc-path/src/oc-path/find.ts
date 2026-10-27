@@ -568,10 +568,18 @@ function walkMd(
 
   // Fields are leaves; recursive wildcards may match zero segments around the key.
   if (level.kind === "item") {
-    const fieldSubs = subs.slice(i).filter((sub) => sub.value !== WILDCARD_RECURSIVE);
-    if (fieldSubs.length <= 1) {
-      walkMdItemField(level.item, fieldSubs[0] ?? cur, walked, context);
+    let field: SlotSub | undefined;
+    for (let j = i; j < subs.length; j++) {
+      const sub = expectDefined(subs[j], "Markdown field index checked above");
+      if (sub.value === WILDCARD_RECURSIVE) {
+        continue;
+      }
+      if (field) {
+        return;
+      }
+      field = sub;
     }
+    walkMdItemField(level.item, field ?? cur, walked, context);
     return;
   }
 
