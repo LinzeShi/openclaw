@@ -108,6 +108,9 @@ describe("YAML", () => {
   it.each([
     ["count: 5\n", "count", "abc", "parse-error"],
     ["config:\n  a: 1\n", "config/+a", "99", "unresolved"],
+    ["true: old\n", "+true", "new", "unresolved"],
+    ["config:\n  false: old\n", "config/+false", "new", "unresolved"],
+    ["null: old\n", "+null", "new", "unresolved"],
   ])("rejects universal edits of %s at %s", (raw, address, value, reason) => {
     expect(() => set(raw, address, value)).toThrow(error(reason));
   });
@@ -133,6 +136,7 @@ describe("YAML", () => {
   it.each([
     ["items: []\n", "items/+", '"a"', "items: [ a ]"],
     ["config:\n  a: 1\n", "config/+b", "2", "b: 2"],
+    ["true: old\n", "+false", "new", '"false": new'],
   ])("inserts into %s at %s", (raw, address, value, expected) => {
     expect(set(raw, address, value).raw).toContain(expected);
   });
